@@ -2,7 +2,7 @@
 
 This CA6123 prototype searches registered HDB resale transactions, summarizes historical prices, retrieves evidence from dated HDB and CPF rules, and estimates public-transport commutes when verified OneMap data is present. It sends buyers to the HDB Flat Portal for active listings and the HFE letter for an official grant and loan assessment.
 
-Start with the [agent architecture](docs/AGENT_ARCHITECTURE.md), the [phase summary](PHASE_SUMMARY.md) or the [runnable walkthrough](walkthrough.ipynb).
+Start with the [agent architecture](docs/AGENT_ARCHITECTURE.md), the [reading guide](docs/READING_GUIDE.md) for studying the code in order, the [phase summary](PHASE_SUMMARY.md) or the [runnable walkthrough](walkthrough.ipynb).
 
 ## Run everything with Docker (recommended)
 

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FILES = (".gitignore", ".env.example", ".dockerignore", "README.md", "PHASE_SUMMARY.md", "requirements.lock",
          "requirements-app.txt", "requirements-observability.txt", "walkthrough.ipynb", "streamlit_app.py",
          "Dockerfile", "docker-compose.yml", ".streamlit/config.toml",
-         "docs/AGENT_ARCHITECTURE.md")
+         "docs/AGENT_ARCHITECTURE.md", "docs/READING_GUIDE.md")
 SOURCE_DIRS = ("hdb_advisor", "scripts", "evals", "config", "examples")
 SOURCE_EXTENSIONS = {".py", ".jsonl", ".yaml"}
 

@@ -3,6 +3,7 @@
 The buyer talks to **one assistant**. Behind it, a LangGraph `StateGraph` runs **six model-backed agents**, **deterministic tools** for every figure, **four human-in-the-loop gates**, and layered **guardrails**. The agents interpret, plan, explain and check. They never produce a price, a grant amount, a loan figure or a commute time themselves. Those come only from tools.
 
 > Source of truth: [`hdb_advisor/graph.py`](../hdb_advisor/graph.py). The diagram and tables below mirror its nodes and edges.
+> To study the code step by step, follow the [reading guide](READING_GUIDE.md).
 
 ---
 
