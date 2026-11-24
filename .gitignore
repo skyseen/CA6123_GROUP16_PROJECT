@@ -1,0 +1,44 @@
+# ---- Secrets -------------------------------------------------------------
+# API keys and OneMap credentials. Copy .env.example to .env locally.
+.env
+.env.*
+!.env.example
+
+# ---- Local data, sessions and caches --------------------------------------
+# The transaction snapshot, OneMap geocode/route/destination caches, chat
+# checkpoints, remembered preferences, saved shortlists, the rules index and
+# Phoenix traces. They can hold buyer-entered details and are rebuilt locally
+# with `python -m scripts.ingest_hdb` and `python -m scripts.onemap_cache`.
+data/
+logs/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# ---- Build and review outputs ----------------------------------------------
+dist/
+output/
+*.zip
+
+# ---- Course and team documents (not for a public repository) ---------------
+CA6123 Assignment Brief*.pdf
+Technical plan*.docx
+
+# ---- Python ----------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# ---- Editors, OS and local tooling -----------------------------------------
+.idea/
+.vscode/
+.claude/
+.DS_Store
+Thumbs.db

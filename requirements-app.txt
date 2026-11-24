@@ -1,0 +1,20 @@
+# UI and trace exporters, installed on top of requirements.lock (used by the Docker image).
+altair==6.3.0
+arize-phoenix-otel==0.17.3
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.4
+narwhals==2.29.0
+openinference-instrumentation-langchain==0.1.90
+openinference-instrumentation==0.1.83
+openinference-semantic-conventions==0.1.47
+opentelemetry-exporter-http-transport==0.66b2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-exporter-otlp==1.45.2
+opentelemetry-instrumentation==0.66b2
+pillow==13.0.0
+pyarrow==26.0.1
+pydeck==0.9.3
+six==1.17.0
+streamlit==1.67.0
+wrapt==2.5.2

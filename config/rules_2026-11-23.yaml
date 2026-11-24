@@ -1,0 +1,51 @@
+snapshot_date: '2026-11-23'
+# Every threshold and amount below was re-checked against the live source pages on 2026-11-24.
+# EHG tiers were cross-checked with HDB's worked examples (S$3,000 -> S$95,000; S$4,200 and S$4,400 -> S$70,000).
+verified_on: '2026-11-24'
+sources:
+  family: https://www.hdb.gov.sg/buying-a-flat/flat-grant-and-loan-eligibility/couples-and-families/cpf-housing-grants
+  ehg: https://www.hdb.gov.sg/buying-a-flat/flat-grant-and-loan-eligibility/couples-and-families/enhanced-cpf-housing-grant
+  ehg_table: https://www.hdb.gov.sg/-/media/buying-a-flat/flat-grant-and-loan-eligibility/couples-and-families/enhanced-cpf-housing-grant/EHG-amount-Families.pdf
+  phg: https://www.hdb.gov.sg/buying-a-flat/flat-grant-and-loan-eligibility/couples-and-families/proximity-housing-grant
+  loan: https://www.hdb.gov.sg/buying-a-flat/flat-grant-and-loan-eligibility/housing-loan/housing-loan-from-hdb
+  interest: https://www.hdb.gov.sg/managing-my-home/finances/loan-matters/interest-rate
+  cpf: https://www.cpf.gov.sg/member/infohub/educational-resources/how-much-cpf-savings-you-can-use-for-your-home-purchase
+  income_update: https://www.hdb.gov.sg/hdb-pulse/news/2026/increase-in-income-ceilings-and-greater-support-for-families-with-children
+thresholds:
+  family_income: {value: 16000, source: family}
+  loan_family_income: {value: 16000, source: income_update}
+  ehg_income: {value: 9000, source: ehg}
+  minimum_lease: {value: 20, source: loan}
+  sufficient_coverage_age: {value: 95, source: loan}
+  age_tenure_ceiling: {value: 65, source: loan}
+  tenure: {value: 25, source: loan}
+  ltv: {value: 0.75, source: loan}
+  msr: {value: 0.30, source: loan}
+  assessment_rate: {value: 0.03, source: loan}
+  repayment_rate: {value: 0.026, source: interest}
+  family_min_age: {value: 21, source: family}
+amounts:
+  family:
+    source: family
+    SC_SC: [80000, 50000]
+    SC_SPR: [70000, 40000]
+  ehg:
+    source: ehg_table
+    tiers: [[1500, 120000], [2000, 110000], [2500, 105000], [3000, 95000], [3500, 90000], [4000, 80000], [4500, 70000], [5000, 65000], [5500, 55000], [6000, 50000], [6500, 40000], [7000, 30000], [7500, 25000], [8000, 20000], [8500, 10000], [9000, 5000]]
+  phg:
+    source: phg
+    live_with: 30000
+    within_4km: 20000
+sections:
+  - [family-eligibility, family, CPF Housing Grant for Resale Families, Eligibility conditions, "Family Grant considers first-timer status, Singapore citizenship and a qualifying SC or SPR family member, age, property ownership, and household income. The ordinary family ceiling is S$16,000 and the extended or multigeneration ceiling is S$24,000."]
+  - [family-amount, family, CPF Housing Grant for Resale Families, Amount by flat size and citizenship, "Family Grant for first-timer households buying two to four rooms is S$80,000 for SC/SC or S$70,000 for SC/SPR. For five rooms or bigger the corresponding amounts are S$50,000 and S$40,000. Mixed first- and second-timer households have separate amounts."]
+  - [ehg-income, ehg, Enhanced CPF Housing Grant, Income and first-timer household, "For first-timer families EHG uses average monthly gross household income during the required employment reference period. The ceiling is S$9,000, with tiered amounts up to S$120,000. Resale EHG requires qualifying for the Family Grant."]
+  - [ehg-employment, ehg, Enhanced CPF Housing Grant, Employment, "A qualifying core member must have worked continuously for the required 12-month period ending two months before HFE application and must still be working at application."]
+  - [ehg-lease, ehg, Enhanced CPF Housing Grant, Remaining lease, "The lease must exceed 20 years. The full EHG tier requires coverage until the youngest core member reaches age 95. A shorter eligible lease may result in a pro-rated grant."]
+  - [phg-distance, phg, Proximity Housing Grant, Proximity conditions, "Families may receive S$30,000 to live with parents or a child, or S$20,000 to live within 4 km. Verify the addresses using the HDB proximity service."]
+  - [phg-household, phg, Proximity Housing Grant, Family and prior subsidy, "PHG requires the relevant family nucleus and eligible relatives. It can be used once only and has no income ceiling. The flat's remaining lease must exceed 20 years. Previous PHG awards require checking the exact household circumstances."]
+  - [loan-ltv, loan, Housing Loan from HDB, Loan-to-value and remaining lease, "For resale flats the full LTV is up to 75% of the lower of purchase price and valuation. It requires lease coverage to the youngest applicant's age 95 and a remaining lease above 20 years. Otherwise consult HDB for pro-rating."]
+  - [loan-tenure, loan, Housing Loan from HDB, Repayment period and mortgage servicing ratio, "The maximum term is the shortest of 25 years, 65 minus average applicant age, and remaining lease minus 20 years. Mortgage servicing ratio caps monthly loan instalments at 30% of monthly income. HDB also assesses other commitments."]
+  - [loan-floor, loan, Housing Loan from HDB, Interest rate floor, "HDB assesses the loan amount using the higher of the prevailing rate and a 3.0% annual interest floor."]
+  - [interest-quarter, interest, Interest Rate for HDB Housing Loan, Concessionary interest rate, "The HDB concessionary rate for October to December 2026 is 2.60% per year. It is 0.10 percentage point above the CPF OA rate and is reviewed quarterly."]
+  - [cpf-usage, cpf, CPF Savings for a Home Purchase, Remaining lease and valuation, "CPF Ordinary Account withdrawal limits depend on tenure, loan type and coverage to age 95 for the youngest buyer. Shorter lease coverage can reduce CPF usage. Consult the CPF Housing Usage Calculator for an individual result."]

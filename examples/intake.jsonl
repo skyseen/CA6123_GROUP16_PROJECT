@@ -1,0 +1,12 @@
+{"input": "Four-room budget 600k", "output": "{\"flat_type\": \"4 ROOM\", \"max_price\": 600000}"}
+{"input": "3-room under 480k within 40 minutes of NTU", "output": "{\"flat_type\": \"3 ROOM\", \"max_price\": 480000, \"max_commute_min\": 40, \"destination\": \"NTU\"}"}
+{"input": "Choa Chu Kang five-room past 6 months", "output": "{\"town\": \"CHOA CHU KANG\", \"flat_type\": \"5 ROOM\", \"months_back\": 6}"}
+{"input": "Find a two-room flat with at least 62 years left", "output": "{\"flat_type\": \"2 ROOM\", \"min_est_lease_years\": 62}"}
+{"input": "Show executive recent sales", "output": "{\"flat_type\": \"EXECUTIVE\"}"}
+{"input": "We're a first-time SC/SPR couple", "output": "{\"citizenship\": \"SC_SPR\", \"first_timer\": true}"}
+{"input": "Household income 6k and no monthly debt", "output": "{\"household_income_monthly\": 6000, \"existing_monthly_debt\": 0}"}
+{"input": "Purchase price S$600,000 and valuation S$565,000", "output": "{\"purchase_price\": 600000, \"valuation\": 565000}"}
+{"input": "Both Singapore citizens aged 31 and 33", "output": "{\"citizenship\": \"SC_SC\", \"buyer_ages\": [31, 33]}"}
+{"input": "Considering a flat with 71 years remaining lease", "output": "{\"flat_remaining_lease\": 71}"}
+{"input": "Avoid the 01 to 03 floor band", "output": "{\"avoid_floor\": \"01 TO 03\"}"}
+{"input": "Can you explain CPF grants?", "output": "{}"}

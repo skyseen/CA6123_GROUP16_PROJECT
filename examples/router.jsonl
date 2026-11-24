@@ -1,0 +1,15 @@
+{"input": "4-room sales under 600k", "output": "research"}
+{"input": "Typical prices in Tampines", "output": "research"}
+{"input": "Shortlist with a commute to NTU", "output": "research"}
+{"input": "Recent resale prices by town", "output": "research"}
+{"input": "What is the family grant?", "output": "grants"}
+{"input": "PHG near parents", "output": "grants"}
+{"input": "Could EHG apply to us?", "output": "grants"}
+{"input": "CPF subsidies for a first-time family", "output": "grants"}
+{"input": "Estimate my HDB loan", "output": "affordability"}
+{"input": "How much could I borrow?", "output": "affordability"}
+{"input": "What monthly instalment would I pay?", "output": "affordability"}
+{"input": "What does HFE mean?", "output": "explain"}
+{"input": "Is a registered transaction the asking price?", "output": "explain"}
+{"input": "Can you book a flight?", "output": "out_of_scope"}
+{"input": "Write a poem about space", "output": "out_of_scope"}
