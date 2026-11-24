@@ -13,7 +13,7 @@ from hdb_advisor.state import BuyerProfile
 @pytest.mark.parametrize("profile", [
     BuyerProfile(flat_type="4 ROOM", max_price=600_000),
     BuyerProfile(flat_type="3 ROOM", max_price=520_000, min_est_lease_years=60, months_back=6),
-    BuyerProfile(town="TAMPINES", max_price=850_000, avoid_floor="01 TO 03", months_back=18),
+    BuyerProfile(towns=["TAMPINES"], max_price=850_000, avoid_floor="01 TO 03", months_back=18),
 ])
 def test_real_csv_matches_pandas(profile):
     csv = os.getenv("HDB_ORACLE_CSV")
@@ -31,8 +31,8 @@ def test_real_csv_matches_pandas(profile):
     if profile.min_est_lease_years is not None:
         remaining = 99 - (today.year + today.month / 12 - matches.lease_commence_date)
         matches = matches[remaining >= profile.min_est_lease_years]
-    if profile.town:
-        matches = matches[matches.town == profile.town]
+    if profile.towns:
+        matches = matches[matches.town.isin(profile.towns)]
     if profile.avoid_floor:
         matches = matches[matches.storey_range != profile.avoid_floor]
     result = search_market(Path("data/hdb.db"), profile, today=today)

@@ -1,7 +1,15 @@
 """Validated contracts shared by the graph and deterministic tools."""
 from typing import Annotated, Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+TOWNS = (
+    "ANG MO KIO", "BEDOK", "BISHAN", "BUKIT BATOK", "BUKIT MERAH", "BUKIT PANJANG", "BUKIT TIMAH",
+    "CENTRAL AREA", "CHOA CHU KANG", "CLEMENTI", "GEYLANG", "HOUGANG", "JURONG EAST", "JURONG WEST",
+    "KALLANG/WHAMPOA", "MARINE PARADE", "PASIR RIS", "PUNGGOL", "QUEENSTOWN", "SEMBAWANG",
+    "SENGKANG", "SERANGOON", "TAMPINES", "TOA PAYOH", "WOODLANDS", "YISHUN",
+)
+
 
 # How far back a market search may read registered sales. The dataset starts in January 2017.
 MAX_MONTHS_BACK = 120
@@ -19,10 +27,38 @@ class BuyerProfile(Contract):
     max_price: float | None = Field(None, gt=0)
     min_est_lease_years: int | None = Field(None, ge=0, le=99)
     months_back: int = Field(12, ge=1, le=MAX_MONTHS_BACK)
-    town: str | None = Field(None, max_length=40)
+    # Towns to search (HDB town names). Empty means all towns. A commute destination is a separate field.
+    towns: list[str] = Field(default_factory=list, max_length=len(TOWNS))
     avoid_floor: str | None = Field(None, pattern=r"^\d{2} TO \d{2}$")
     # Where the buyer commutes to, as they wrote it ("NTU", "Raffles Place MRT", a postal code).
     destination: str | None = Field(None, min_length=2, max_length=80)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _single_town(cls, data):
+        """Accept the earlier single `town` field (saved preferences, CLI edits) as a one-town list."""
+        if isinstance(data, dict) and "town" in data:
+            data = dict(data)
+            town = data.pop("town")
+            data.setdefault("towns", [town] if town else [])
+        return data
+
+    @field_validator("towns", mode="before")
+    @classmethod
+    def _normalise_towns(cls, value):
+        """Accept any capitalisation ("Tampines", "tampines") and keep only real HDB towns, once each."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        names = []
+        for item in value:
+            name = " ".join(str(item).upper().split())
+            if name not in TOWNS:
+                raise ValueError(f"Unknown HDB town: {item}")
+            if name not in names:
+                names.append(name)
+        return names
     # The OneMap-resolved key for that destination. Set by the resolver, never by a model.
     anchor_id: str | None = Field(None, pattern=r"^[A-Z0-9_]{1,40}$")
     max_commute_min: int | None = Field(None, gt=0, le=300)

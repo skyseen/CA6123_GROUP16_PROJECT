@@ -95,7 +95,7 @@ def writer_context(state: AdvisorState) -> dict:
     context = {
         "intent": state.get("intent"),
         "filters": {key: (money(profile[key]) if key == "max_price" else profile[key]) for key in ("flat_type", "max_price", "months_back", "min_est_lease_years",
-                                                   "town", "destination", "max_commute_min")
+                                                   "towns", "destination", "max_commute_min")
                     if profile.get(key) is not None},
         "registration_window": market.get("window"),
         "towns_ranked": towns,

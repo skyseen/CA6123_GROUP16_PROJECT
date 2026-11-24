@@ -36,10 +36,13 @@ def oracle_counts(db, result):
     clauses = ["month >= ?", "month <= ?"]
     args = [first, last]
     for key, expression in (("flat_type", "flat_type = ?"), ("max_price", "resale_price <= ?"),
-                            ("town", "town = ?"), ("avoid_floor", "storey_range != ?")):
+                            ("avoid_floor", "storey_range != ?")):
         if key in q:
             clauses.append(expression)
             args.append(q[key])
+    if q.get("towns"):
+        clauses.append("town IN (" + ", ".join("?" for _ in q["towns"]) + ")")
+        args.extend(q["towns"])
     if "min_est_lease_years" in q:
         clauses.append("lease_commence_year >= ?")
         args.append(lease_reference(singapore_today()) - 99 + q["min_est_lease_years"])

@@ -89,14 +89,14 @@ def test_preferences_and_approved_save(fixture_db, tmp_path):
     directory = tmp_path / "shortlists"
     app = build_graph(Settings(fixture_db, export=directory), InMemorySaver(), store)
     result, gates = run(app, "4-room under 600k", "save", save=True, decisions={
-        "confirm_plan": {"action": "edit", "changes": {"town": "TAMPINES"}, "remember": True},
+        "confirm_plan": {"action": "edit", "changes": {"towns": ["TAMPINES"]}, "remember": True},
         "approve_output": {"action": "approve"},
     })
     assert gates == ["confirm_plan", "approve_output"]
     assert json.loads(Path(result["saved_path"]).read_text())["report"] == result["canonical_report"]
     assert len(list(directory.glob("*.json"))) == 1
     next_result, _ = run(app, "4-room under 620k", "preferences")
-    assert next_result["market"]["query"]["town"] == "TAMPINES"
+    assert next_result["market"]["query"]["towns"] == ["TAMPINES"]
     examples = store.search(("examples", "test", "intake"))
     assert len(examples) == 1 and "TAMPINES" in examples[0].value["output"]
 
@@ -236,7 +236,7 @@ def test_policy_agent_retrieves_twice_and_uses_valid_chunk_ids():
 def test_commute_limit_is_separate_from_max_price():
     profile = offline_intake("Four-room flats in Jurong West under 45 minutes to NTU, budget S$615k.")
     assert profile.flat_type == "4 ROOM"
-    assert profile.town == "JURONG WEST"
+    assert profile.towns == ["JURONG WEST"] and profile.destination == "NTU"
     assert profile.max_price == 615000
     assert profile.max_commute_min == 45
     assert profile.destination == "NTU" and profile.anchor_id is None  # the resolver, not the parser, sets anchor_id
@@ -300,10 +300,10 @@ def test_follow_up_keeps_the_search_and_changes_only_the_town():
     second, gates = resume_all(app, prepare_turn("What about Woodlands instead?", refine=True), config, approve)
     profile = second["profile"]
     assert gates == ["confirm_plan"]
-    assert (profile["town"], profile["flat_type"], profile["max_price"], profile["max_commute_min"]) == (
-        "WOODLANDS", "4 ROOM", 600000, 45)
+    assert (profile["towns"], profile["flat_type"], profile["max_price"], profile["max_commute_min"]) == (
+        ["WOODLANDS"], "4 ROOM", 600000, 45)
     assert {"market", "route", "grants"} <= set(second["plan"])
-    assert second["refinement"]["changed"] == {"town": "WOODLANDS"}
+    assert second["refinement"]["changed"] == {"towns": ["WOODLANDS"]}
     assert {"flat_type", "max_price", "max_commute_min", "destination", "anchor_id"} <= set(second["refinement"]["kept"])
 
 

@@ -7,7 +7,7 @@ from langchain_core.vectorstores import InMemoryVectorStore
 
 from .policy import LocalEmbeddings, ROOT
 
-PREF_FIELDS = {"destination", "avoid_floor", "town"}
+PREF_FIELDS = {"destination", "avoid_floor", "towns"}
 
 
 def preferences(store, user_id):
@@ -20,7 +20,7 @@ def preferences(store, user_id):
 def remember(store, user_id, profile):
     if store is None:
         return
-    values = profile.model_dump(include=PREF_FIELDS, exclude_none=True)
+    values = {k: v for k, v in profile.model_dump(include=PREF_FIELDS).items() if v not in (None, [])}
     if values:
         store.put(("prefs", user_id), "profile", values)
     else:

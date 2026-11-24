@@ -13,14 +13,8 @@ from pydantic import Field
 
 from .guards import INJECTION, NRIC, PHONE
 from .policy import GRANT_PROFILE_FIELDS, retrieve_rules
-from .state import MAX_MONTHS_BACK, BuyerProfile, Contract, Intent, RuleChunk, Step
+from .state import MAX_MONTHS_BACK, TOWNS, BuyerProfile, Contract, Intent, RuleChunk, Step
 
-TOWNS = (
-    "ANG MO KIO", "BEDOK", "BISHAN", "BUKIT BATOK", "BUKIT MERAH", "BUKIT PANJANG", "BUKIT TIMAH",
-    "CENTRAL AREA", "CHOA CHU KANG", "CLEMENTI", "GEYLANG", "HOUGANG", "JURONG EAST", "JURONG WEST",
-    "KALLANG/WHAMPOA", "MARINE PARADE", "PASIR RIS", "PUNGGOL", "QUEENSTOWN", "SEMBAWANG",
-    "SENGKANG", "SERANGOON", "TAMPINES", "TOA PAYOH", "WOODLANDS", "YISHUN",
-)
 ROOM_TYPES = {word: str(index) for index, word in enumerate(("one", "two", "three", "four", "five"), 1)}
 
 
@@ -168,13 +162,40 @@ POSITIVE_WITH = re.compile(r"\b(?:live|living|stay|staying|move|moving)\s+(?:in\
                            r"(?:parents?|child|children|mother|father|mum|mom|dad|in-laws?)")
 
 
+RELATIVE = r"(?:parents?|child|children|mother|father|mum|mom|dad|in-laws?)"
+NEGATION = r"\b(?:do not|don't|dont|does not|doesn't|not|won't|will not|never|aren't|are not|no longer)\b"
+NEGATED_NEAR = re.compile(NEGATION + r"[^.;,]{0,25}?\b(?:live|living|stay|staying|be|move|moving)\b[^.;,]{0,12}?"
+                          r"\b(?:within|near|nearby|close to)\b")
+
+
+def relative_clauses(text: str) -> list[str]:
+    """Clauses that mention a parent or child: distances and negations are read only inside these."""
+    found, previous = [], False
+    for clause in re.split(r"[;,]|\.(?=\s|$)|\band\b|\bbut\b", text):
+        # "...our parents, and they live 10 km away": a pronoun right after continues the same subject.
+        current = bool(re.search(rf"\b{RELATIVE}\b", clause)) or (previous and bool(re.search(r"\b(?:they|them|their)\b", clause)))
+        if current:
+            found.append(clause)
+        previous = current
+    return found
+
+
 def living_arrangement(text: str) -> str | None:
     """PHG proximity from explicit phrasing only. Negation is checked first; anything unclear stays unknown."""
-    if not re.search(r"\b(?:parents?|child|children|mother|father|mum|mom|dad|in-laws?)\b", text):
+    clauses = relative_clauses(text)
+    if not clauses:
         return None
-    negated = NEGATED_WITH.search(text)
-    distance = re.search(r"(\d+(?:\.\d+)?)\s*km\b", text)
-    if re.search(r"\bwithin\s*4\s*km\b", text) and not negated:
+    about = " . ".join(clauses)
+    negated = NEGATED_WITH.search(about)
+    if NEGATED_NEAR.search(about):
+        # "We will not live within 4 km of our parents": farther than 4 km, unless a distance says otherwise.
+        distance = re.search(r"(\d+(?:\.\d+)?)\s*km\b", about)
+        if distance and float(distance[1]) <= 4 and not re.search(r"\bwithin\s*4\s*km\b", about):
+            return None
+        return "no"
+    # A distance counts only when it sits in the same clause as the relative, not "our MRT is 2 km away".
+    distance = re.search(r"(\d+(?:\.\d+)?)\s*km\b", about)
+    if re.search(r"\bwithin\s*4\s*km\b", about) and not negated:
         return "within_4km"
     if distance:
         km = float(distance[1])
@@ -186,6 +207,47 @@ def living_arrangement(text: str) -> str | None:
     if POSITIVE_WITH.search(text):
         return "live_with"
     return None
+
+
+REMOVE = r"\b(?:remove|drop|clear|without|no|ignore|forget|skip|don't need|do not need|any)\b(?:\s+(?:the|my|a|any))?\s+"
+CLEARABLE = {
+    ("destination", "max_commute_min"): rf"{REMOVE}(?:commute|commuting|travel|destination)",
+    ("max_price",): rf"{REMOVE}(?:budget|price limit|price cap|max(?:imum)? price)",
+    ("towns",): rf"{REMOVE}(?:towns?|town filter|location filter)|\b(?:all|any) towns?\b",
+    ("min_est_lease_years",): rf"{REMOVE}(?:minimum )?lease(?: requirement| filter)?",
+}
+
+
+def cleared_filters(brief: str) -> set[str]:
+    """Search filters the buyer asked to remove, e.g. "remove the commute requirement" or "any town"."""
+    cleared = set()
+    for fields, pattern in CLEARABLE.items():
+        if re.search(pattern, brief, re.I):
+            cleared.update(fields)
+    return cleared
+
+
+TOWN_PATTERN = re.compile(r"\b(" + "|".join(re.escape(t) for t in sorted(TOWNS, key=len, reverse=True)) + r")\b", re.I)
+
+
+def search_towns(brief: str) -> list[str]:
+    """Towns the buyer wants to search, in mention order.
+
+    Town names inside the commute destination ("commute to Woodlands MRT") or in a clause about where
+    relatives live ("our parents live in Bedok") are not search filters.
+    """
+    text = brief
+    destination = find_destination(brief)
+    if destination:
+        text = text.replace(destination, " ")
+    for clause in relative_clauses(text.lower()):
+        text = re.sub(re.escape(clause), " ", text, flags=re.I)
+    found = []
+    for match in TOWN_PATTERN.finditer(text):
+        name = match[1].upper()
+        if name not in found:
+            found.append(name)
+    return found
 
 
 def find_destination(brief: str) -> str | None:
@@ -206,9 +268,9 @@ def offline_intake(brief: str) -> BuyerProfile:
         result["flat_type"] = "EXECUTIVE"
     elif "multi-generation" in text:
         result["flat_type"] = "MULTI-GENERATION"
-    towns = [town for town in TOWNS if re.search(rf"\b{re.escape(town.lower())}\b", text)]
-    if len(towns) == 1:
-        result["town"] = towns[0]
+    towns = search_towns(brief)
+    if towns:
+        result["towns"] = towns
     floor = re.search(r"\bavoid (?:the )?(?:floor(?:s| band)? )?(\d{2}) (?:to|-) (\d{2})\b", text)
     if floor:
         result["avoid_floor"] = f"{floor[1]} TO {floor[2]}"
@@ -250,9 +312,9 @@ def offline_intake(brief: str) -> BuyerProfile:
         result["citizenship"] = "SC_SPR"
     elif "single singapore citizen" in text:
         result["citizenship"] = "SC_single"
-    if re.search(r"\b(?:second[- ]timer|not (?:a )?first[- ]timer)", text):
+    if re.search(r"\b(?:second[- ]?timers?|not (?:a |all )?first[- ]?timers?)", text):
         result["first_timer"] = False
-    elif re.search(r"\bfirst[- ](?:timer|time)\b", text):
+    elif re.search(r"\bfirst[- ]?(?:timers?|time buyers?|time)\b", text):
         result["first_timer"] = True
     ages = re.search(r"\b(?:ages?|aged)\s*(?:are|:)?\s*(\d{2})(?:\s*(?:and|,)\s*(\d{2}))?", text)
     if ages:
@@ -284,7 +346,7 @@ def offline_router(brief: str, profile: BuyerProfile) -> RouterOutput:
         intent = "affordability"
     elif re.search(r"\b(?:grant|grants|phg|ehg)\b", text) and not profile.max_price:
         intent = "grants"
-    elif profile.flat_type or profile.max_price or profile.town or profile.destination or re.search(
+    elif profile.flat_type or profile.max_price or profile.towns or profile.destination or re.search(
         r"\b(?:resale|historical|transactions?|hdb|towns?|shortlist|blocks?)\b", text
     ):
         intent = "research"
@@ -302,7 +364,7 @@ def default_plan(intent: Intent, profile: BuyerProfile, brief: str) -> PlanOutpu
     plan = []
     # A grant or loan question that also states search filters (budget, town or commute anchor) is a
     # combined request, so it gets the market search too. A flat type alone is grant information.
-    searching = bool(profile.max_price or profile.town or profile.destination)
+    searching = bool(profile.max_price or profile.towns or profile.destination)
     if intent == "research" or (intent in ("grants", "affordability") and searching):
         plan.append("market")
         if profile.anchor_id:

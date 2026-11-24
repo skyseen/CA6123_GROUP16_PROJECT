@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .agents import (Critique, Narrative, PlanOutput, RouterOutput, default_plan,
-                     offline_intake, offline_router, stated_months_back)
+                     cleared_filters, offline_intake, offline_router, stated_months_back)
 from .exports import save_research_shortlist
 from .freshness import check_freshness, refresh_data
 from .guards import INJECTION, inspect_input, redact
@@ -47,7 +47,9 @@ class Settings:
 
 # Search filters and household facts a follow-up ("What about Woodlands?") keeps from the last approved turn.
 CARRIED_FIELDS = tuple(BuyerProfile.model_fields)
-HOUSEHOLD_FIELDS = {"citizenship", "first_timer", "near_parents"}
+# Every household and flat fact the grant screening depends on; the buyer confirms them before it runs.
+HOUSEHOLD_FIELDS = {"citizenship", "first_timer", "near_parents", "household_income_monthly", "buyer_ages",
+                    "flat_remaining_lease", "continuous_employment_12m", "prerequisites_confirmed", "prior_phg"}
 FINANCING_FIELDS = ("purchase_price", "valuation", "household_income_monthly", "buyer_ages",
                     "existing_monthly_debt", "flat_remaining_lease")
 
@@ -177,7 +179,9 @@ def build_graph(settings: Settings, checkpointer, store=None):
         if state.get("refine") and state.get("last_profile"):
             carried = {k: v for k, v in state["last_profile"].items() if v is not None and v != []}
         updates = state.get("updates") or {}
-        merged = known | carried | fields | updates
+        # "Remove the commute requirement" clears those filters explicitly, even when they were carried forward.
+        cleared = {key: None for key in cleared_filters(state["brief"].split("\nClarification:")[-1])}
+        merged = known | carried | fields | cleared | updates
         # An explicit None from a form clears a filter, for example removing the town.
         merged = {k: v for k, v in merged.items() if v is not None and k != "anchor_id"}
         profile, destination = with_destination(BuyerProfile.model_validate(merged))
@@ -209,7 +213,7 @@ def build_graph(settings: Settings, checkpointer, store=None):
     def route_after_classification(state):
         profile = state["profile"]
         needs_filter = (state["intent"] == "research" and "investment_advice" not in state["guard_events"]
-                        and not any(profile.get(key) for key in ("max_price", "flat_type", "town", "destination")))
+                        and not any(profile.get(key) for key in ("max_price", "flat_type", "towns", "destination")))
         needs_financing = state["intent"] == "affordability" and any(
             profile.get(field) is None or profile.get(field) == [] for field in FINANCING_FIELDS
         )
@@ -225,7 +229,7 @@ def build_graph(settings: Settings, checkpointer, store=None):
             missing = [f for f in FINANCING_FIELDS if profile.get(f) in (None, [])]
             question = f"To estimate the loan I still need {describe_missing(missing)}."
         else:
-            missing = ["flat_type", "max_price", "town", "destination"]
+            missing = ["flat_type", "max_price", "towns", "destination"]
             question = "What would you like to research? For a market search, give a flat type, budget, town or commute anchor."
         decision = interrupt({"type": "clarify", "question": question, "missing": missing, "known": known,
                               "options": ["answer", "skip"]})
@@ -423,7 +427,8 @@ def build_graph(settings: Settings, checkpointer, store=None):
         # The buyer previews the exact Markdown that will be saved, downloaded and shown as the final report.
         narrative = {} if state["critic_issues"] else state["narrative"]
         report = compose(state["canonical_report"], narrative)
-        decision = interrupt({"type": "approve_output", "issues": state["critic_issues"] + state.get("edit_issues", []),
+        decision = interrupt({"type": "approve_output", "issues": state["critic_issues"],
+                              "edit_issues": state.get("edit_issues", []),
                               "report": report, "summary": narrative.get("summary", ""),
                               "options": ["approve", "edit", "reject"]})
         action = decision.get("action")
@@ -435,8 +440,11 @@ def build_graph(settings: Settings, checkpointer, store=None):
             summary = str(decision.get("summary", decision.get("introduction", ""))).strip()
             edited = {**(state["narrative"] or {}), "summary": summary} if summary else {}
             problems = narrative_issues(edited, state) if edited else []
-            return {"narrative": state["narrative"] if problems else edited, "critic_issues": [],
-                    "edit_issues": problems, "reapprove": True}
+            if problems:
+                # A failed edit changes nothing: the last checked preview and the Critic's decision stand.
+                return {"edit_issues": problems, "reapprove": True}
+            # A human edit that passes the same grounding rules replaces the narrative the Critic rejected.
+            return {"narrative": edited, "critic_issues": [], "edit_issues": [], "reapprove": True}
         user_id = config.get("configurable", {}).get("user_id", "local")
         if narrative:
             # Learn from approved experience: the approved summary becomes a few-shot example for this user.

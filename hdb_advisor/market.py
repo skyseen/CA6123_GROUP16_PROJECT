@@ -188,7 +188,7 @@ def quantile(values: list[float], fraction: float) -> float:
 
 def search_market(db: Path, profile: BuyerProfile, *, today: date | None = None) -> MarketSummary:
     today = today or singapore_today()
-    fields = {"flat_type", "months_back", "max_price", "min_est_lease_years", "town", "avoid_floor"}
+    fields = {"flat_type", "months_back", "max_price", "min_est_lease_years", "towns", "avoid_floor"}
     summary = MarketSummary(query=profile.model_dump(include=fields, exclude_none=True), as_of=today.isoformat())
     try:
         with closing(connect_readonly(db)) as conn, conn:
@@ -201,18 +201,20 @@ def search_market(db: Path, profile: BuyerProfile, *, today: date | None = None)
             end = summary.source.last_month
             start = month_start(end, profile.months_back)
             summary.window = f"{start} to {end}"
-            matches = conn.execute("""
+            # Town names are validated against the fixed HDB list; only the placeholders are generated.
+            town_clause = f"AND town IN ({', '.join('?' for _ in profile.towns)})" if profile.towns else ""
+            matches = conn.execute(f"""
                 SELECT month, town, address_key, resale_price, lease_commence_year FROM resale_tx
                 WHERE month BETWEEN ? AND ?
                   AND (? IS NULL OR flat_type = ?)
                   AND (? IS NULL OR resale_price <= ?)
                   AND (? IS NULL OR 99 - (? - lease_commence_year) >= ?)
-                  AND (? IS NULL OR town = ?)
+                  {town_clause}
                   AND (? IS NULL OR storey_range != ?)
                 ORDER BY town, month DESC, resale_price, address_key
             """, (start, end, profile.flat_type, profile.flat_type, profile.max_price, profile.max_price,
                   profile.min_est_lease_years, lease_reference(today), profile.min_est_lease_years,
-                  profile.town, (profile.town or "").strip().upper(), profile.avoid_floor, profile.avoid_floor))
+                  *profile.towns, profile.avoid_floor, profile.avoid_floor))
             by_town = defaultdict(list)
             for transaction in matches:
                 by_town[transaction["town"]].append(transaction)

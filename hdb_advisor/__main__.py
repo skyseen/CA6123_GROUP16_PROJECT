@@ -45,7 +45,7 @@ def decision_for(gate: dict, *, auto: bool) -> dict:
                     edits = json.loads(input('Filter changes as JSON, e.g. {"max_price": 650000}: '))
                     if not isinstance(edits, dict) or not edits.keys() <= {
                         "months_back", "max_price", "flat_type", "min_est_lease_years",
-                        "max_commute_min", "destination", "avoid_floor", "town"
+                        "max_commute_min", "destination", "avoid_floor", "towns"
                     }:
                         raise ValueError("Unknown filter")
                     BuyerProfile.model_validate(edits)

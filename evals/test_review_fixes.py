@@ -140,8 +140,8 @@ def test_cancelling_produces_no_report():
 
 def test_clearing_every_preference_removes_the_stored_profile():
     store = InMemoryStore()
-    remember(store, "u", BuyerProfile(town="YISHUN"))
-    assert preferences(store, "u") == {"town": "YISHUN"}
+    remember(store, "u", BuyerProfile(towns=["YISHUN"]))
+    assert preferences(store, "u") == {"towns": ["YISHUN"]}
     remember(store, "u", BuyerProfile())
     assert preferences(store, "u") == {}
 
@@ -183,3 +183,85 @@ def test_calculator_details_run_the_loan_without_a_second_plan_approval():
     _, gates = drive(app, prepare_turn("Refine.", refine=True, updates={"max_price": 500000.0}, preapproved=True),
                      config, approve)
     assert [g["type"] for g in gates] == ["confirm_plan"]
+
+
+def test_failed_summary_edit_keeps_the_critics_rejection(tmp_path):
+    """Review finding: after the Critic rejects a draft, an invalid edit must not bring the draft back."""
+    csv = tmp_path / "rows.csv"
+    csv.write_text(HEADER + "2026-10,TAMPINES,4 ROOM,10,SAMPLE RD,04 TO 06,92,MODEL A,1990,63 years,500000\n")
+    db = tmp_path / "hdb.db"
+    ingest_csv(db, csv)
+
+    class Model:
+        def call(self, role, schema, context, examples):
+            return {"intake": BuyerProfile(flat_type="4 ROOM", max_price=600000),
+                    "router": RouterOutput(intent="research", confidence=1),
+                    "planner": PlanOutput(plan=["market", "report"], rationale="Search."),
+                    "writer": Narrative(summary="Tampines flats are for sale at S$500,000."),
+                    "critic": Critique(acceptable=False, issues=["Overclaims availability."])}[role], 1
+    app = build_graph(Settings(db, model=Model(), export=tmp_path / "out"), InMemorySaver())
+    previews = []
+
+    def decide(gate):
+        if gate["type"] == "confirm_plan":
+            return {"action": "approve"}
+        previews.append(gate)
+        if len(previews) == 1:
+            return {"action": "edit", "summary": "Tampines has a median of S$999,000."}  # invalid figure
+        return {"action": "approve"}
+    result, _ = drive(app, prepare_turn("4-room under 600k", save=True), config_for("edit-fail"), decide)
+    first, second = previews
+    assert "for sale" not in first["report"] and first["issues"]
+    assert second["edit_issues"] and second["issues"] == first["issues"]
+    assert "for sale" not in second["report"] and "999,000" not in second["report"]
+    saved = __import__("json").loads(Path(result["saved_path"]).read_text())["report"]
+    assert "for sale" not in saved and saved == second["report"]
+
+
+def test_towns_and_destination_are_separate():
+    assert offline_intake("Compare Woodlands and Tampines 4-room under 600k").towns == ["WOODLANDS", "TAMPINES"]
+    commute = offline_intake("4-room under 600k, commute to Woodlands MRT within 45 min")
+    assert commute.towns == [] and commute.destination == "Woodlands MRT"
+    assert offline_intake("Our parents live in Bedok, 4-room under 600k").towns == []
+    assert BuyerProfile.model_validate({"town": "tampines"}).towns == ["TAMPINES"]  # saved single-town preferences
+    app = build_graph(Settings(DB), InMemorySaver())
+    result, _ = drive(app, prepare_turn("Compare Woodlands and Tampines 4-room under 600k"), config_for("towns"),
+                      lambda g: {"action": "approve"})
+    assert {t["town"] for t in result["market"]["towns"]} == {"WOODLANDS", "TAMPINES"}
+
+
+def test_distance_negation_and_relative_binding():
+    assert offline_intake("We will not live within 4 km of our parents, check PHG").near_parents == "no"
+    assert offline_intake("Our MRT is 2 km away and our parents live in Bedok").near_parents is None
+    assert offline_intake("We do not live with our parents and they live 10 km away").near_parents == "no"
+    assert offline_intake("My parents stay 2.5 km away").near_parents == "within_4km"
+
+
+def test_removing_the_commute_clears_destination_and_limit():
+    app = build_graph(Settings(DB), InMemorySaver())
+    config = config_for("remove-commute")
+    approve = lambda g: {"action": "approve"} if g["type"] == "confirm_plan" else {"action": "skip"}
+    drive(app, prepare_turn("4-room under S$600k, commute to NTU within 55 min"), config, approve)
+    second, gates = drive(app, prepare_turn("Remove the commute requirement", refine=True), config, approve)
+    profile = second["profile"]
+    assert profile["destination"] is None and profile["max_commute_min"] is None and profile["anchor_id"] is None
+    assert (profile["flat_type"], profile["max_price"]) == ("4 ROOM", 600000)
+    assert "route" not in second["plan"] and not second["routes"]
+    assert {"destination", "max_commute_min"} <= set(second["refinement"]["changed"])
+
+
+def test_grants_only_gate_shows_every_screening_fact():
+    app = build_graph(Settings(DB), InMemorySaver())
+    seen = []
+    drive(app, prepare_turn("SC/SC first-timers, income 7000, ages 30 and 32, check grants"), config_for("gate"),
+          lambda g: (seen.append(g), {"action": "approve"})[1] if g["type"] == "confirm_plan" else {"action": "skip"})
+    household = seen[0]["household"]
+    assert "market" not in seen[0]["plan"]
+    assert household["household_income_monthly"] == 7000 and household["buyer_ages"] == [30, 32]
+    assert {"flat_remaining_lease", "continuous_employment_12m", "prior_phg"} <= set(household)
+
+
+def test_first_timer_plural_and_second_timer():
+    assert offline_intake("SC/SC first-timers, check grants").first_timer is True
+    assert offline_intake("first time buyers, check grants").first_timer is True
+    assert offline_intake("we are second-timers").first_timer is False

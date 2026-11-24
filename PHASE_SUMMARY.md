@@ -121,3 +121,15 @@ Source: `output/pdf/hdb-functional-review.pdf`. Each finding has a regression te
 | Policy archiver stopped on the first HTTP error | Each source is captured independently with its URL, HTTP status and section count |
 | Clearing every preference left the old one stored | `remember` deletes the stored profile when nothing remains |
 | Stale generic ZIP in `dist/` | Removed; only `ca6123_group16.zip` is built |
+
+## Second functional review fixes (25 November 2026)
+
+| Finding | Fix | Check |
+| --- | --- | --- |
+| "We will not live within 4 km of our parents" became Within 4 km and an S$20,000 PHG | Distance negation is handled; distances and negations are read only in clauses about the parent or child (including "…and they live 10 km away"); "our MRT is 2 km away" no longer counts | `test_distance_negation_and_relative_binding`; browser showed "Neither" |
+| A failed summary edit restored the draft the Critic rejected | A failed edit changes nothing; the Critic's decision and the last checked preview stand; the edit error is shown separately | `test_failed_summary_edit_keeps_the_critics_rejection` |
+| "Compare Woodlands and Tampines" searched all towns; "commute to Woodlands MRT" became a town filter; town capitalisation varied | `BuyerProfile.towns` is a validated list (any capitalisation, old single-town preferences still load); destinations and where relatives live are never town filters; the forms use a multi-select | `test_towns_and_destination_are_separate`; browser searched exactly 2 towns |
+| "Remove the commute requirement" kept the commute; resets left the old brief | `cleared_filters` reads removal phrases for commute, budget, towns and lease; **Clear commute** action; new conversation and profile switch empty the brief with a **Reuse previous brief** option | `test_removing_the_commute_clears_destination_and_limit`; browser |
+| Approval did not match the task | Grants-only requests show only the household and flat facts that affect screening, under **Check grants** | `test_grants_only_gate_shows_every_screening_fact`; browser |
+| The answer was not the strongest element | Metrics follow the result (market, loan with inputs used, or grants); model usage stays in Agent trace; one next action under the answer (**Edit loan details**, **Add missing grant details** or **Compare towns**); new search and other changes are folded away | Browser |
+| "First-timers" (plural) was not recognised | Parser accepts plural and "first time buyers" | `test_first_timer_plural_and_second_timer` |

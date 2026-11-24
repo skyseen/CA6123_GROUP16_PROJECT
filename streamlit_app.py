@@ -82,7 +82,7 @@ PROFILE_LABELS = {
     "max_price": ("Budget", lambda v: f"up to S${v:,.0f}"),
     "months_back": ("Past sales from", lambda v: f"the last {v} months"),
     "min_est_lease_years": ("Lease left", lambda v: f"at least {v} years"),
-    "town": ("Town", str.title),
+    "towns": ("Towns", lambda v: ", ".join(t.title() for t in v)),
     "avoid_floor": ("Avoid floors", str),
     "destination": ("Commute to", str),
     "max_commute_min": ("Commute limit", lambda v: f"{v} min"),
@@ -255,6 +255,16 @@ for key, value in defaults.items():
 # Streamlit drops a widget's state while it is hidden (during a gate), so restore the last brief.
 st.session_state.setdefault("brief", st.session_state.last_brief)
 
+def fresh_start(**extra):
+    """A new conversation starts empty: no result, no pending decision and no previous brief in the box.
+
+    The previous brief is kept aside so the buyer can choose to reuse it.
+    """
+    previous = st.session_state.get("brief") or st.session_state.get("last_brief") or ""
+    st.session_state.update(thread=uuid.uuid4().hex[:12], result=None, gate=None, trail=[], active_config=None,
+                            brief="", last_brief="", previous_brief=previous, **extra)
+
+
 with st.sidebar:
     st.header("Session")
     has_key = bool(os.getenv("GOOGLE_API_KEY"))
@@ -274,12 +284,11 @@ with st.sidebar:
     if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", user) and not redact(user)[1]:
         if user != st.session_state.user:
             # Each preference profile has its own conversations; switching never resumes another's decision.
-            st.session_state.update(user=user, thread=uuid.uuid4().hex[:12], result=None, gate=None, trail=[],
-                                    active_config=None, profile_switched=True)
+            fresh_start(profile_switched=True, user=user)
     else:
         st.warning("Use letters, digits, hyphens or underscores only.")
     if st.button("New conversation", use_container_width=True):
-        st.session_state.update(thread=uuid.uuid4().hex[:12], result=None, gate=None, trail=[], active_config=None)
+        fresh_start()
         st.rerun()
     st.caption(f"Thread `{st.session_state.thread}`")
     if st.session_state.pop("profile_switched", False):
@@ -342,24 +351,35 @@ def use_example():
         st.session_state.update(brief=EXAMPLES[choice], last_brief=EXAMPLES[choice], example=None)
 
 
+def reuse_previous_brief():
+    st.session_state.update(brief=st.session_state.get("previous_brief", ""), previous_brief="")
+
+
+has_result = bool(st.session_state.result and (st.session_state.result.get("canonical_report")
+                                               or st.session_state.result.get("cancelled")))
 if gate is None:
-    st.markdown("### What would you like to research?")
-    st.caption("Ask in your own words. One request can combine a budget, a commute limit, grant questions and a "
-               "loan estimate. The assistant splits the work across its agents and shows you the plan before any "
-               "tool runs.")
-    brief = st.text_area("Research brief", key="brief", height=110, label_visibility="collapsed",
-                         placeholder="e.g. 4-room under S$600k within 45 minutes of Raffles Place MRT, and what do you need for grants?")
-    run_column, _ = st.columns([1, 3])
-    if run_column.button("Run research", type="primary", use_container_width=True):
-        if brief.strip():
-            st.session_state.trail = []
-            st.session_state.last_brief = brief
-            queue(prepare_turn(brief, save=save))
-            st.rerun()
-        else:
-            st.warning("Enter a research brief first.")
-    st.pills("Try an example", list(EXAMPLES), key="example", on_change=use_example,
-             help="Examples only fill the box above. You can edit the text before running it.")
+    # Once there is an answer, a brand-new search steps back so the answer and its next step lead.
+    composer = st.expander("Start a new search", expanded=False) if has_result else st.container()
+    with composer:
+        st.markdown("### What would you like to research?")
+        st.caption("Ask in your own words. One request can combine a budget, a commute limit, grant questions and a "
+                   "loan estimate. The assistant splits the work across its agents and shows you the plan before any "
+                   "tool runs.")
+        brief = st.text_area("Research brief", key="brief", height=110, label_visibility="collapsed",
+                             placeholder="e.g. 4-room under S$600k within 45 minutes of Raffles Place MRT, and what do you need for grants?")
+        run_column, reuse_column, _ = st.columns([1, 1.2, 1.8])
+        if run_column.button("Run research", type="primary", use_container_width=True):
+            if brief.strip():
+                st.session_state.trail = []
+                st.session_state.last_brief = brief
+                queue(prepare_turn(brief, save=save))
+                st.rerun()
+            else:
+                st.warning("Enter a research brief first.")
+        if st.session_state.get("previous_brief") and not brief.strip():
+            reuse_column.button("Reuse previous brief", on_click=reuse_previous_brief, use_container_width=True)
+        st.pills("Try an example", list(EXAMPLES), key="example", on_change=use_example,
+                 help="Examples only fill the box above. You can edit the text before running it.")
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -506,8 +526,10 @@ def refinement_sentence(values) -> str | None:
 
 
 def applied_filters(values) -> str:
+    if not values.get("market"):
+        return ""  # Search filters only describe a market search; a loan or grant answer has none.
     profile = values.get("profile") or {}
-    keys = ["flat_type", "max_price", "months_back", "min_est_lease_years", "town", "destination", "max_commute_min"]
+    keys = ["flat_type", "max_price", "months_back", "min_est_lease_years", "towns", "destination", "max_commute_min"]
     chips = [f"<span class='fact'><b>{escape(PROFILE_LABELS[k][0])}</b>{escape(str(PROFILE_LABELS[k][1](profile[k])))}</span>"
              for k in keys if profile.get(k) not in (None, [])]
     return "".join(chips)
@@ -583,72 +605,94 @@ def clarify_gate(gate):
         st.rerun()
 
 
+FACT_SPECS = {
+    "citizenship": ("Citizenship", "choice", [None, *CITIZENSHIP], lambda v: "Unknown" if v is None else CITIZENSHIP[v]),
+    "first_timer": ("All applicants first-timers?", "yesno"),
+    "near_parents": ("Living with or near parents/child", "choice", [None, "live_with", "within_4km", "no"],
+                     lambda v: {None: "Unknown", "live_with": "Living together", "within_4km": "Within 4 km",
+                                "no": "Neither"}[v]),
+    "household_income_monthly": ("Gross monthly household income (S$)", "money"),
+    "buyer_ages": ("Applicant ages (e.g. 30, 32)", "ages"),
+    "flat_type": ("Flat type", "choice", [None, *FLAT_TYPES], lambda v: "Unknown" if v is None else v.title()),
+    "flat_remaining_lease": ("Flat's remaining lease (years)", "years"),
+    "continuous_employment_12m": ("Worked continuously for 12 months?", "yesno"),
+    "prerequisites_confirmed": ("Other HDB prerequisites checked?", "yesno"),
+    "prior_phg": ("Received PHG before?", "yesno"),
+    "purchase_price": ("Purchase price (S$)", "money"),
+    "valuation": ("Valuation (S$)", "money"),
+    "existing_monthly_debt": ("Existing monthly debt (S$)", "money"),
+}
+YES_NO = [None, True, False]
+
+
+def fact_inputs(keys, values, prefix) -> dict:
+    """Render inputs for household, flat and loan facts, three per row. Unknown stays None."""
+    chosen = {}
+    columns = st.columns(3)
+    for index, key in enumerate(keys):
+        label, kind, *extra = FACT_SPECS[key]
+        column = columns[index % 3]
+        current = values.get(key)
+        widget = f"{prefix}-{key}"
+        if kind == "choice":
+            options, fmt = extra
+            chosen[key] = column.selectbox(label, options, index=options.index(current) if current in options else 0,
+                                           format_func=fmt, key=widget)
+        elif kind == "yesno":
+            chosen[key] = column.selectbox(label, YES_NO, index=YES_NO.index(current) if current in YES_NO else 0,
+                                           format_func=lambda v: {None: "Unknown", True: "Yes", False: "No"}[v], key=widget)
+        elif kind == "ages":
+            text = column.text_input(label, value=", ".join(map(str, current or [])), key=widget)
+            chosen[key] = [int(a) for a in re.findall(r"\d{2,3}", text)] or None
+        else:
+            step, top = {"money": (500.0, None), "years": (1.0, 99.0)}[kind]
+            chosen[key] = column.number_input(label, min_value=0.0, max_value=top, step=step,
+                                              value=float(current) if current is not None else None, key=widget)
+    return chosen
+
+
 def plan_gate(gate):
     steps = " → ".join(PLAN_STEPS[step][0] for step in gate["plan"] if step in PLAN_STEPS)
+    searching, screening = "market" in gate["plan"], "grants" in gate["plan"]
+    title, action = (("Check your filters and household facts, then run", "Run search and check grants")
+                     if searching and screening else
+                     ("Check your household facts", "Check grants") if screening else
+                     ("Check your filters, then run", "Run with these filters"))
     sentence = refinement_sentence(st.session_state.result or {})
     follow = f"<div style='margin:.3rem 0 .5rem'>{escape(sentence)}</div>" if sentence else ""
-    st.markdown(f'<div class="gate"><h3>Check your filters, then run</h3>{follow}<b>{steps}</b><br>'
-                f'<span class="muted">Adjust anything below. The search uses exactly the values shown.</span></div>',
+    st.markdown(f'<div class="gate"><h3>{title}</h3>{follow}<b>{steps}</b><br>'
+                f'<span class="muted">Adjust anything below. The run uses exactly the values shown.</span></div>',
                 unsafe_allow_html=True)
     current = gate["filters"]
+    household = gate.get("household") or {}
     with st.form("plan"):
-        a, b, c = st.columns(3)
-        flat = a.selectbox("Flat type", ["Any", *FLAT_TYPES],
-                           index=(FLAT_TYPES.index(current["flat_type"]) + 1) if current.get("flat_type") else 0)
-        price = b.number_input("Maximum price (S$, 0 = none)", min_value=0, step=10_000,
-                               value=int(current.get("max_price") or 0))
-        months = c.slider("Look back at sales from the last … months", 1, LOOKBACK_MAX,
-                          min(LOOKBACK_MAX, int(current.get("months_back", 12))),
-                          help=LOOKBACK_HELP)
-        d, e, f = st.columns(3)
-        lease = d.number_input("Minimum estimated lease (years, 0 = none)", 0, 99,
-                               int(current.get("min_est_lease_years") or 0))
-        commute = e.number_input("Commute limit (minutes, 0 = none)", 0, 300,
-                                 int(current.get("max_commute_min") or 0))
-        town = f.selectbox("Town", ["Any", *TOWNS],
-                           index=(TOWNS.index(current["town"]) + 1) if current.get("town") in TOWNS else 0)
-        destination = st.text_input("Commute destination (address, postal code, building or MRT station; blank = none)",
-                                    value=current.get("destination") or "")
-        st.markdown(destination_note(st.session_state.result or {}), unsafe_allow_html=True)
-        household = gate.get("household") or {}
-        chosen = {}
-        if "household" in gate and gate["household"] != {}:
-            st.markdown("**Check the household facts the grant screening will use**")
-            g, h, i = st.columns(3)
-            citizenship_options = [None, *CITIZENSHIP]
-            chosen["citizenship"] = g.selectbox("Citizenship", citizenship_options,
-                                                index=citizenship_options.index(household.get("citizenship")),
-                                                format_func=lambda v: "Unknown" if v is None else CITIZENSHIP[v])
-            first_options = [None, True, False]
-            chosen["first_timer"] = h.selectbox("All applicants first-timers?", first_options,
-                                                index=first_options.index(household.get("first_timer")),
-                                                format_func=lambda v: {None: "Unknown", True: "Yes", False: "No"}[v])
-            near_options = [None, "live_with", "within_4km", "no"]
-            chosen["near_parents"] = i.selectbox(
-                "Living with or near parents/child", near_options, index=near_options.index(household.get("near_parents")),
-                format_func=lambda v: {None: "Unknown", "live_with": "Living together", "within_4km": "Within 4 km",
-                                       "no": "Neither"}[v])
-        remember = st.checkbox("Remember my town, floor and commute destination for future conversations")
+        wanted = {}
+        if searching:
+            wanted = search_filter_inputs(current)
+        if screening:
+            st.markdown("**Household and flat facts used for the grant screening**")
+            facts = ["citizenship", "first_timer", "near_parents", "household_income_monthly", "buyer_ages",
+                     "flat_remaining_lease", "continuous_employment_12m", "prerequisites_confirmed", "prior_phg"]
+            if not searching:
+                facts.insert(5, "flat_type")
+            wanted |= fact_inputs(facts, {**household, **current}, "plan")
+        remember = st.checkbox("Remember my towns, floor and commute destination for future conversations") if searching else False
         run, cancel, _ = st.columns([1.4, 1, 1.6])
-        submitted = run.form_submit_button("Run with these filters", type="primary", use_container_width=True)
+        submitted = run.form_submit_button(action, type="primary", use_container_width=True)
         cancelled = cancel.form_submit_button("Cancel", use_container_width=True)
     if cancelled:
         queue(Command(resume={"action": "cancel"}))
         st.rerun()
     if submitted:
-        wanted = {"flat_type": None if flat == "Any" else flat, "max_price": float(price) or None,
-                  "months_back": months, "min_est_lease_years": lease or None,
-                  "max_commute_min": commute or None, "town": None if town == "Any" else town,
-                  "destination": destination.strip() or None, **chosen}
         shown = {**current, **household}
         changes = {key: value for key, value in wanted.items() if shown.get(key) != value
-                   and not (value is None and key not in shown)}
+                   and not (value in (None, []) and shown.get(key) in (None, []))}
         # Whatever is on screen is what runs: any difference from the proposal is sent as an edit.
         if changes:
             try:
-                BuyerProfile.model_validate({k: v for k, v in changes.items() if v is not None})
+                BuyerProfile.model_validate({k: v for k, v in changes.items() if v not in (None, [])})
             except ValueError:
-                st.error("One of the edited filters is not valid.")
+                st.error("One of the values is not valid. Check the ages (18 to 120) and the numbers.")
                 return
             queue(Command(resume={"action": "edit", "changes": changes, "remember": remember}))
         else:
@@ -656,10 +700,39 @@ def plan_gate(gate):
         st.rerun()
 
 
+def search_filter_inputs(current) -> dict:
+    """The market search filters, prefilled with the agent's reading of the brief."""
+    a, b, c = st.columns(3)
+    flat = a.selectbox("Flat type", ["Any", *FLAT_TYPES],
+                       index=(FLAT_TYPES.index(current["flat_type"]) + 1) if current.get("flat_type") else 0)
+    price = b.number_input("Maximum price (S$, 0 = none)", min_value=0, step=10_000,
+                           value=int(current.get("max_price") or 0))
+    months = c.slider("Look back at sales from the last … months", 1, LOOKBACK_MAX,
+                      min(LOOKBACK_MAX, int(current.get("months_back", 12))),
+                      help=LOOKBACK_HELP)
+    d, e, f = st.columns(3)
+    lease = d.number_input("Minimum estimated lease (years, 0 = none)", 0, 99,
+                           int(current.get("min_est_lease_years") or 0))
+    commute = e.number_input("Commute limit (minutes, 0 = none)", 0, 300,
+                             int(current.get("max_commute_min") or 0))
+    towns = f.multiselect("Towns (none = all towns)", TOWNS, default=[t for t in current.get("towns", []) if t in TOWNS],
+                          format_func=str.title)
+    destination = st.text_input("Commute destination (address, postal code, building or MRT station; blank = none)",
+                                value=current.get("destination") or "")
+    st.markdown(destination_note(st.session_state.result or {}), unsafe_allow_html=True)
+    return {"flat_type": None if flat == "Any" else flat, "max_price": float(price) or None, "months_back": months,
+            "min_est_lease_years": lease or None, "max_commute_min": commute or None, "towns": towns,
+            "destination": destination.strip() or None}
+
+
 def output_gate(gate):
     issues = "".join(f"<li>{escape(issue)}</li>" for issue in gate.get("issues", []))
-    body = (f"Please review these points first:<ul>{issues}</ul>" if issues
+    body = (f"The Critic did not accept the generated summary, so it is left out:<ul>{issues}</ul>"
+            "Below is exactly what will be saved and downloaded." if issues
             else "Below is exactly what will be saved and downloaded.")
+    if gate.get("edit_issues"):
+        edit_problems = "".join(f"<li>{escape(issue)}</li>" for issue in gate["edit_issues"])
+        body += f"<div style='margin-top:.5rem'><b>Your last edit was not applied:</b><ul>{edit_problems}</ul></div>"
     st.markdown(f'<div class="gate"><h3>Approve the final report</h3>{body}</div>', unsafe_allow_html=True)
     with st.container(height=420, border=True):
         st.markdown(gate["report"])
@@ -993,30 +1066,107 @@ def finance_headline(values) -> str:
 
 
 def follow_up(values):
-    """Refine this search: carry the approved filters forward and change only what the buyer asks."""
+    """Change this search: carry the approved filters forward and change only what the buyer asks."""
     profile = values.get("profile") or {}
-    with st.form("refine"):
-        st.markdown("**Refine this search**  <span class='muted'>Your filters and household details carry forward."
-                    "</span>", unsafe_allow_html=True)
-        text = st.text_input("Follow-up", placeholder="e.g. What about Woodlands instead?", label_visibility="collapsed")
-        a, b, c, d, e = st.columns([1, 1, 1, 1, 1.4])
-        price = a.number_input("Budget (S$, 0 = none)", min_value=0, step=10_000, value=int(profile.get("max_price") or 0))
-        commute = b.number_input("Commute limit (min, 0 = none)", 0, 300, int(profile.get("max_commute_min") or 0))
-        months = c.number_input("Look back at sales (months)", 1, LOOKBACK_MAX,
-                                min(LOOKBACK_MAX, int(profile.get("months_back") or 12)),
-                                help=LOOKBACK_HELP)
-        town = d.selectbox("Town", ["Any", *TOWNS],
-                           index=(TOWNS.index(profile["town"]) + 1) if profile.get("town") in TOWNS else 0)
-        destination = e.text_input("Commute destination", value=profile.get("destination") or "")
-        submitted = st.form_submit_button("Refine", type="primary")
+    with st.expander("Change this search", expanded=False):
+        with st.form("refine"):
+            st.markdown("<span class='muted'>Your filters and household details carry forward. Blank or 0 removes "
+                        "a filter.</span>", unsafe_allow_html=True)
+            text = st.text_input("Follow-up", placeholder="e.g. What about Woodlands instead?",
+                                 label_visibility="collapsed")
+            a, b, c = st.columns(3)
+            price = a.number_input("Budget (S$, 0 = none)", min_value=0, step=10_000,
+                                   value=int(profile.get("max_price") or 0))
+            months = b.number_input("Look back at sales (months)", 1, LOOKBACK_MAX,
+                                    min(LOOKBACK_MAX, int(profile.get("months_back") or 12)), help=LOOKBACK_HELP)
+            towns = c.multiselect("Towns (none = all towns)", TOWNS, default=profile.get("towns") or [],
+                                  format_func=str.title)
+            d, e = st.columns([2, 1])
+            destination = d.text_input("Commute destination (blank = no commute)", value=profile.get("destination") or "")
+            commute = e.number_input("Commute limit (min, 0 = none)", 0, 300, int(profile.get("max_commute_min") or 0))
+            submitted = st.form_submit_button("Update search", type="primary")
+        if profile.get("destination") or profile.get("max_commute_min"):
+            if st.button("Clear commute", help="Removes the commute destination and limit, then asks you to confirm."):
+                start_refinement("Remove the commute requirement.", {"destination": None, "max_commute_min": None})
     if submitted:
         wanted = {"max_price": float(price) or None, "max_commute_min": commute or None, "months_back": months,
-                  "town": None if town == "Any" else town, "destination": destination.strip() or None}
-        updates = {k: v for k, v in wanted.items() if profile.get(k) != v}
+                  "towns": towns, "destination": destination.strip() or None}
+        updates = {k: v for k, v in wanted.items() if (profile.get(k) or None) != (v or None)}
         if not text.strip() and not updates:
             st.warning("Type a follow-up or change a filter.")
             return
         start_refinement(text.strip() or "Refine the previous search.", updates)
+
+
+def next_step(values):
+    """One action that fits the answer, placed directly under it."""
+    profile = values.get("profile") or {}
+    loan = values.get("affordability") or {}
+    grants = values.get("grants") or []
+    missing = sorted({f for g in grants for f in g["missing_fields"] if f in FACT_SPECS})
+    towns = [t["town"] for t, _ in ranked_towns(values)]
+    if loan:
+        label = "Edit loan details" if loan.get("status") == "illustrative" else "Add loan details"
+        keys = ["purchase_price", "valuation", "household_income_monthly", "buyer_ages", "existing_monthly_debt",
+                "flat_remaining_lease"]
+        brief, preapproved = "Update the loan details.", True
+    elif missing:
+        label, keys = f"Add missing grant details ({len(missing)})", missing
+        brief, preapproved = "Re-check the grants with my details.", True
+    elif len(towns) > 1:
+        label, keys, brief, preapproved = "Compare towns", None, "Compare these towns.", False
+    else:
+        return
+    with st.expander(label, expanded=False):
+        with st.form("next-step"):
+            if keys:
+                chosen = fact_inputs(keys, profile, "next")
+            else:
+                chosen = {"towns": st.multiselect("Towns to compare", TOWNS, default=towns[:3], format_func=str.title)}
+            go = st.form_submit_button(label, type="primary")
+        if go:
+            updates = {k: v for k, v in chosen.items() if v not in (None, []) and v != profile.get(k)}
+            if keys is None and chosen["towns"]:
+                updates = {"towns": chosen["towns"]}
+            if not updates:
+                st.warning("Change at least one value.")
+                return
+            try:
+                BuyerProfile.model_validate(updates)
+            except ValueError:
+                st.error("One of the values is not valid. Check the ages (18 to 120) and the numbers.")
+                return
+            # Household and loan details count as approved here; a town change goes back to the plan gate.
+            start_refinement(brief, updates, preapproved=preapproved)
+
+
+def result_metrics(values):
+    """Metrics that belong to this answer: market, loan or grants. Model usage lives in Agent trace."""
+    loan = values.get("affordability") or {}
+    grants = values.get("grants") or []
+    frame = town_frame(values)
+    if not frame.empty:
+        timed = frame.dropna(subset=["Commute (min)"])
+        a, b, c = st.columns(3)
+        a.metric("Towns matched", len(frame))
+        b.metric("Transactions", f"{int(frame['Transactions'].sum()):,}")
+        if values.get("routes"):
+            c.metric("Best verified commute", f"{timed['Commute (min)'].min():.1f} min" if not timed.empty else "n/a")
+    if loan.get("status") == "illustrative":
+        p = values.get("profile") or {}
+        a, b, c = st.columns(3)
+        a.metric("HDB loan ceiling", money(loan["loan_ceiling"]))
+        b.metric("Monthly instalment", f"S${loan['monthly_instalment']:,.2f}")
+        c.metric("Repayment period", f"{loan['tenure_years']} years")
+        st.caption(f"Inputs used: price {money(p.get('purchase_price') or 0)}, valuation {money(p.get('valuation') or 0)}, "
+                   f"income {money(p.get('household_income_monthly') or 0)}/month, ages "
+                   f"{', '.join(map(str, p.get('buyer_ages') or []))}, existing debt {money(p.get('existing_monthly_debt') or 0)}"
+                   f"/month, remaining lease {p.get('flat_remaining_lease') or 0:g} years.")
+    if grants and frame.empty and loan.get("status") != "illustrative":
+        a, b, c = st.columns(3)
+        a.metric("Grants that may apply", sum(g["status"] == "may_apply" for g in grants))
+        b.metric("Need more information", sum(g["status"] == "need_more_info" for g in grants))
+        c.metric("Not eligible", sum(g["status"] == "not_eligible" for g in grants))
 
 
 if gate is None and values and values.get("cancelled"):
@@ -1029,7 +1179,7 @@ if gate is None and values and values.get("cancelled"):
         queue(prepare_turn(st.session_state.last_brief, save=st.session_state.get("save_flag", False)))
         st.rerun()
     if b.button("Start again", use_container_width=True):
-        st.session_state.update(thread=uuid.uuid4().hex[:12], result=None, gate=None, trail=[], active_config=None)
+        fresh_start()
         st.rerun()
 elif gate is None and values and values.get("canonical_report"):
     st.divider()
@@ -1042,16 +1192,11 @@ elif gate is None and values and values.get("canonical_report"):
                 f"<div style='font-size:1.08rem'>{escape(lead)}</div>{extra}"
                 f"<div style='margin-top:.6rem'>{applied_filters(values)}</div></div>", unsafe_allow_html=True)
     st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
+    result_metrics(values)
     if values.get("market") and not (values["market"].get("towns") or values["market"].get("error")):
         zero_result_actions(values, "answer", summary=False)
+    next_step(values)
     follow_up(values)
-    frame = town_frame(values)
-    timed = frame.dropna(subset=["Commute (min)"]) if not frame.empty else frame
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Towns matched", len(frame))
-    k2.metric("Transactions", f"{int(frame['Transactions'].sum()):,}" if not frame.empty else "0")
-    k3.metric("Best verified commute", f"{timed['Commute (min)'].min():.1f} min" if not timed.empty else "n/a")
-    k4.metric("Model calls · tokens", f"{values.get('model_calls', 0)} · {values.get('token_used', 0):,}")
     if any(event.startswith("pii_") for event in values.get("guard_events", [])):
         st.info("Personal identifiers in the brief were redacted before any model or log saw them.")
     if values.get("saved_path"):

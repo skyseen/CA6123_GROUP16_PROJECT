@@ -142,7 +142,7 @@ All agents use Gemini (`gemini-3.5-flash-lite` by default) through structured ou
 | Memory | `last_profile`, `last_plan`, `freshness` |
 | Audit | `guard_events`, `model_calls`, `token_used`, `policy_calls`, `policy_tokens`, `model_status`, transports |
 
-`BuyerProfile` separates search filters (flat type, budget, look-back window up to 120 months, town, destination, commute limit) from household facts (citizenship, first-timer, income, ages, employment, living arrangement, prior PHG) and loan inputs (price, valuation, debt, remaining lease). **Unknown is `null`, never a guess.**
+`BuyerProfile` separates search filters (flat type, budget, look-back window up to 120 months, towns to search, commute destination, commute limit) from household facts (citizenship, first-timer, income, ages, employment, living arrangement, prior PHG) and loan inputs (price, valuation, debt, remaining lease). **Unknown is `null`, never a guess.**
 
 ---
 
