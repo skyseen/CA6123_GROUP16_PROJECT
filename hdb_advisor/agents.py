@@ -277,7 +277,7 @@ def offline_intake(brief: str) -> BuyerProfile:
     figure = r"(?:s?\$\s*)?(\d[\d,]*(?:\.\d+)?)(?:\s*([km])\b)?"
     for key, lead in {
         "max_price": r"\b(?:under|up to|below|budget(?: of| is| up to)?|max(?:imum)? price)\s*",
-        "household_income_monthly": r"\b(?:monthly (?:household )?income|household income|income|earn)\s*(?:is|of|=|:)?\s*",
+        "household_income_monthly": r"\b(?:monthly (?:household )?income|household income|income|earn)\s*(?:is|of|=|:)?\s*(?:now\s*)?",
         "existing_monthly_debt": r"\b(?:monthly debt|existing debt|debt)\s*(?:is|of|=|:)?\s*",
         # "purchase price 500000" and "purchase price is 500000" both count. A bare "price" needs "is", "of", "=" or ":".
         "purchase_price": r"\b(?:(?:purchase|flat) price\s*(?:is|of|=|:)?|price\s*(?:is|of|=|:))\s*",

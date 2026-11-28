@@ -16,7 +16,8 @@ from .exports import save_research_shortlist
 from .freshness import check_freshness, refresh_data
 from .guards import INJECTION, inspect_input, redact
 from .market import search_market
-from .memory import PREF_FIELDS, examples_for, preferences, record_example, remember
+from .memory import (PREF_FIELDS, examples_for, household_memory, now_sg, preferences, recall_memories,
+                     record_example, record_search, remember, remember_household, search_summary)
 from .onemap import OneMap, resolve_destination, route_to_anchor
 from .policy import (GRANT_PROFILE_FIELDS, estimate_affordability, evaluate_grants, reconcile_grants,
                      retrieve_rules)
@@ -79,6 +80,7 @@ def prepare_turn(brief: str, guards: bool = True, *, save: bool = False, refine:
     return {
         "refine": refine, "updates": updates, "refinement": {}, "destination": {},
         "approved_report": "", "reapprove": False, "edit_issues": [], "preapproved": preapproved,
+        "memories": [], "from_memory": [],
         "brief": clean, "profile": {}, "intent": "out_of_scope", "plan": [], "confidence": 0,
         "rationale": "", "market": {}, "routes": [], "grants": [], "evidence": [], "affordability": None,
         "narrative": {}, "canonical_report": "", "critic_issues": [], "guard_events": events,
@@ -143,6 +145,24 @@ def build_graph(settings: Settings, checkpointer, store=None):
         events = state["guard_events"] + (["refresh_failed"] if updated["status"] == "failed" else [])
         return {"freshness": updated, "guard_events": events}
 
+    def memory_on(config) -> bool:
+        """Long-term memory is used only for a signed-in user who has not switched it off."""
+        return bool(config.get("configurable", {}).get("memory"))
+
+    def recent_turns(state) -> list[dict]:
+        """Short-term memory: the last three turns of this conversation, as compact data for the agents."""
+        return [{"brief": t["brief"], "answer": t["answer"]} for t in (state.get("history") or [])[-3:]]
+
+    def recall_memory(state, config):
+        """Long-term memory: past searches relevant to this brief, recalled before the agents read it."""
+        if not memory_on(config) or "direct_instruction" in state["guard_events"]:
+            return {"memories": []}
+        user_id = config.get("configurable", {}).get("user_id", "local")
+        found, dropped = recall_memories(store, user_id, state["brief"])
+        events = state["guard_events"] + (["memory_instruction_ignored"] if dropped else []) + (["memory_recalled"] if found else [])
+        return {"memories": [{"text": m["text"], "at": m["at"]} for m in found],
+                "guard_events": list(dict.fromkeys(events))}
+
     def with_destination(profile: BuyerProfile) -> tuple[BuyerProfile, dict]:
         """Resolve the buyer's commute destination with OneMap (or the cache). Only this sets anchor_id."""
         if not profile.destination:
@@ -154,8 +174,12 @@ def build_graph(settings: Settings, checkpointer, store=None):
         if "direct_instruction" in state["guard_events"]:
             return {"profile": {}}
         fallback = offline_intake(state["brief"])
-        result, meta = assistant(state, config, "intake", BuyerProfile, {"brief": state["brief"]}, fallback,
-                                 example_role="intake")
+        context = {"brief": state["brief"]}
+        if recent_turns(state):
+            context["earlier_in_this_conversation"] = recent_turns(state)
+        if state.get("memories"):
+            context["remembered_past_searches"] = [m["text"] for m in state["memories"]]
+        result, meta = assistant(state, config, "intake", BuyerProfile, context, fallback, example_role="intake")
         user_id = config.get("configurable", {}).get("user_id", "local")
         fields = result.model_dump(exclude_none=True, exclude_unset=True)
         # The look-back window is read deterministically ("2 years" is 24 months). The schema default is
@@ -175,6 +199,9 @@ def build_graph(settings: Settings, checkpointer, store=None):
                 meta["guard_events"] = list(dict.fromkeys(meta.get("guard_events", state["guard_events"])
                                                           + ["intake_backfill"]))
         known = preferences(store, user_id)
+        # Household facts are remembered only with consent, and rank below anything stated or carried.
+        remembered = household_memory(store, user_id) if memory_on(config) else {}
+        known = remembered | known
         carried = {}
         if state.get("refine") and state.get("last_profile"):
             carried = {k: v for k, v in state["last_profile"].items() if v is not None and v != []}
@@ -191,7 +218,11 @@ def build_graph(settings: Settings, checkpointer, store=None):
             refinement = {"changed": {k: new[k] for k in new if new[k] != carried.get(k) and (k in carried or new[k] not in (None, []))
                                       and not (k == "months_back" and k not in carried and new[k] == 12)},
                           "kept": [k for k in carried if new.get(k) == carried[k]]}
-        return {"profile": profile.model_dump(), "refinement": refinement, "destination": destination, **meta}
+        dumped = profile.model_dump()
+        from_memory = [k for k, v in remembered.items()
+                       if dumped.get(k) == v and k not in fields and k not in updates and k not in carried]
+        return {"profile": dumped, "refinement": refinement, "destination": destination,
+                "from_memory": from_memory, **meta}
 
     def router(state, config):
         if "direct_instruction" in state["guard_events"]:
@@ -202,6 +233,8 @@ def build_graph(settings: Settings, checkpointer, store=None):
             return {"intent": "research", "confidence": 1.0}
         fallback = offline_router(state["brief"], BuyerProfile.model_validate(state["profile"]))
         context = {"brief": state["brief"]}
+        if recent_turns(state):
+            context["earlier_in_this_conversation"] = recent_turns(state)
         if state.get("refinement"):
             # A follow-up such as "What about Woodlands?" is read against the search it refines.
             context["refining_previous_search"] = {k: v for k, v in state["profile"].items() if v not in (None, [])}
@@ -249,8 +282,10 @@ def build_graph(settings: Settings, checkpointer, store=None):
         fallback = default_plan(state["intent"], p, state["brief"])
         if state["intent"] in ("out_of_scope", "explain"):
             return fallback.model_dump()
-        result, meta = assistant(state, config, "planner", PlanOutput, {"intent": state["intent"],
-                                 "profile": p.model_dump(exclude_none=True)}, fallback)
+        planner_context = {"intent": state["intent"], "profile": p.model_dump(exclude_none=True)}
+        if state.get("memories"):
+            planner_context["remembered_past_searches"] = [m["text"] for m in state["memories"]]
+        result, meta = assistant(state, config, "planner", PlanOutput, planner_context, fallback)
         # The intent sets required tools. The planner may select optional tools within that intent.
         allowed = {"market", "grants", "afford", "report"} if state["intent"] == "research" else set(fallback.plan)
         if state["intent"] == "research" and p.anchor_id:
@@ -299,6 +334,9 @@ def build_graph(settings: Settings, checkpointer, store=None):
         user_id = config.get("configurable", {}).get("user_id", "local")
         if decision.get("remember") is True:
             remember(store, user_id, p)
+        if decision.get("remember_household") is True and memory_on(config):
+            # Explicit consent from the plan gate: keep these household facts for future conversations.
+            remember_household(store, user_id, p)
         if action == "edit":
             example = p.model_dump(include=search_fields, exclude_none=True)
             # Record corrected filters with a generic prompt. Household information never enters the example store.
@@ -479,6 +517,16 @@ def build_graph(settings: Settings, checkpointer, store=None):
         # The approved profile becomes the base for a follow-up refinement in this conversation.
         remembered = ({"last_profile": state["profile"], "last_plan": state["plan"]}
                       if state["intent"] != "out_of_scope" else {})
+        if state["intent"] != "out_of_scope" and "direct_instruction" not in state["guard_events"]:
+            # Short-term memory: a compact record of this turn, kept in the conversation's state.
+            summary = search_summary(state)
+            turn = {"at": now_sg().isoformat(timespec="minutes"), "brief": state["brief"][:200],
+                    "intent": state["intent"], "plan": state["plan"], "answer": summary.split("Result: ", 1)[-1][:300]}
+            remembered["history"] = (state.get("history") or [])[-9:] + [turn]
+            if memory_on(config) and state.get("tool_steps"):
+                # Long-term memory: a deterministic, redacted summary of the completed search.
+                user_id = config.get("configurable", {}).get("user_id", "local")
+                record_search(store, user_id, config["configurable"]["thread_id"], state)
         if state.get("approved_report"):
             return {"canonical_report": state["approved_report"], **remembered}
         if state["narrative"] and not state["critic_issues"]:
@@ -486,7 +534,8 @@ def build_graph(settings: Settings, checkpointer, store=None):
         return {"narrative": {}, **remembered}
 
     nodes = {
-        "input_guard": input_guard, "check_freshness": freshness, "refresh_gate": refresh_gate,
+        "input_guard": input_guard, "recall_memory": recall_memory, "check_freshness": freshness,
+        "refresh_gate": refresh_gate,
         "intake": intake, "router": router, "clarify": clarify, "planner": planner, "confirm_plan": confirm_plan,
         "market": market, "routes": routes, "policy": policy, "affordability": affordability, "collect": collect,
         "writer": writer, "critic": critic, "revise": revise, "approve_output": approve_output, "finish": finish,
@@ -494,7 +543,8 @@ def build_graph(settings: Settings, checkpointer, store=None):
     for name, node in nodes.items():
         graph.add_node(name, logged(name, node))
     graph.add_edge(START, "input_guard")
-    graph.add_edge("input_guard", "check_freshness")
+    graph.add_edge("input_guard", "recall_memory")
+    graph.add_edge("recall_memory", "check_freshness")
     graph.add_conditional_edges("check_freshness",
                                 lambda s: "refresh_gate" if s["freshness"]["status"] == "stale" else "intake",
                                 ["refresh_gate", "intake"])

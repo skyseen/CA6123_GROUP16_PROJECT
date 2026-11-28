@@ -133,3 +133,10 @@ Source: `output/pdf/hdb-functional-review.pdf`. Each finding has a regression te
 | Approval did not match the task | Grants-only requests show only the household and flat facts that affect screening, under **Check grants** | `test_grants_only_gate_shows_every_screening_fact`; browser |
 | The answer was not the strongest element | Metrics follow the result (market, loan with inputs used, or grants); model usage stays in Agent trace; one next action under the answer (**Edit loan details**, **Add missing grant details** or **Compare towns**); new search and other changes are folded away | Browser |
 | "First-timers" (plural) was not recognised | Parser accepts plural and "first time buyers" | `test_first_timer_plural_and_second_timer` |
+
+## Memory management (28 November 2026)
+
+- **Session and state (short-term):** each conversation is a LangGraph thread checkpointed after every node. `history` keeps each turn's brief and answer; the last 3 turns reach the Router and Intake. **Your conversations** lists threads and resumes one exactly, including a pending decision.
+- **Long-term:** password-free sign-in keys a per-user namespace in the LangGraph store. Completed searches are saved as deterministic, redacted summaries and recalled (keyword plus local embeddings) by the new `recall_memory` node. Household facts are kept only with explicit consent and rank below anything stated. Guests have no long-term memory; **Use my memory** switches it off.
+- **Control:** **My memory** shows, deletes and exports everything, with **Forget everything**.
+- **Tests:** `evals/test_memory.py` (6 tests) covers cross-conversation recall, isolation between users, consent, history, redaction, injection via memory and deletion. Browser check: a new conversation showed "Using what I remember", and Resume restored the earlier answer.

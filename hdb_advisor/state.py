@@ -210,3 +210,6 @@ class AdvisorState(TypedDict, total=False):
     reapprove: bool
     edit_issues: list[str]
     preapproved: bool
+    history: list[dict]
+    memories: list[dict]
+    from_memory: list[str]

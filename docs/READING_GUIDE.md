@@ -95,9 +95,16 @@ Also open [`config/rules_2026-11-23.yaml`](../config/rules_2026-11-23.yaml) and 
 
 ## Stage 6. Learning and memory: [`hdb_advisor/memory.py`](../hdb_advisor/memory.py)
 
-- `remember` / `preferences`: what is kept across conversations, and only when the buyer ticks "remember".
-- `record_example` / `examples_for`: approved corrections become few-shot examples; the 3 most similar are used per call. Look at [`examples/`](../examples/).
-- Then return to `finish` and `intake` in `graph.py`: `last_profile` and `last_plan` are what make "What about Woodlands instead?" keep the rest of the search.
+Read section 8 of the [architecture document](AGENT_ARCHITECTURE.md) first: it maps session, state, short-term and long-term memory to this code.
+
+- **Short-term memory:** in `graph.py`, read `finish` (it appends a turn to `history` and stores `last_profile`/`last_plan`) and `recent_turns` (the last 3 turns given to the Router and Intake).
+- **Long-term memory:** `search_summary` (deterministic, redacted), `record_search`, `recall_memories` (keyword plus local embeddings, instruction-like memories dropped), `remember_household` (consent only), `forget` / `forget_everything`.
+- **Recall in the graph:** the `recall_memory` node and how `intake` ranks remembered facts below anything stated.
+- **Few-shot learning:** `record_example` / `examples_for`; look at [`examples/`](../examples/).
+- **In the UI:** `account_panel`, `conversations_panel`, `memory_panel` in `streamlit_app.py`.
+- **Tests:** [`evals/test_memory.py`](../evals/test_memory.py) covers recall, isolation between users, consent, history, redaction, injection and deletion.
+
+**Try it:** sign in, run a search, start a new conversation with a related brief, and find "Using what I remember" on the plan step.
 
 ---
 

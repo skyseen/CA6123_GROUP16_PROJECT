@@ -16,7 +16,7 @@ The buyer talks to **one assistant**. Behind it, a LangGraph `StateGraph` runs *
 | **Human** | Approve or edit the plan and household facts, answer clarifications, approve the exact final report | `graph.py` interrupts, `streamlit_app.py` forms |
 | **Action** | Query transactions, route commutes, retrieve rules and screen grants, estimate the loan (in parallel) | `market.py`, `onemap.py`, `policy.py`, `mcp_tools.py` |
 | **Report** | Render cited figures in code; the Writer adds a grounded summary and shortlist; the Critic checks it | `report.py`, `agents.py` (Writer, Critic) |
-| **Learn** | Few-shot examples, approved corrections become examples, remembered preferences, follow-ups carry context | `memory.py`, `examples/*.jsonl`, `graph.py` (`finish`) |
+| **Learn** | Short-term memory (conversation state and history), long-term memory (preferences, consented household facts, past-search summaries), few-shot examples from approved corrections | `memory.py`, `examples/*.jsonl`, `graph.py` (`recall_memory`, `finish`) |
 
 ---
 
@@ -25,7 +25,8 @@ The buyer talks to **one assistant**. Behind it, a LangGraph `StateGraph` runs *
 ```mermaid
 flowchart TD
     START([Buyer brief]) --> input_guard[input_guard<br/>PII redaction, injection, advice and listing screens]
-    input_guard --> check_freshness[check_freshness<br/>once per conversation]
+    input_guard --> recall_memory[recall_memory<br/>relevant past searches for a signed-in buyer]
+    recall_memory --> check_freshness[check_freshness<br/>once per conversation]
     check_freshness -->|stale| refresh_gate{{refresh_gate<br/>HUMAN: update or skip}}
     check_freshness -->|current or offline| intake
     refresh_gate --> intake[intake<br/>AGENT: typed BuyerProfile<br/>+ parser backfill + destination resolve]
@@ -72,6 +73,7 @@ Key properties:
 | Node | Kind | Responsibility | Output to state |
 | --- | --- | --- | --- |
 | `input_guard` | Guard | Redact NRIC, phone, card and email; flag direct instructions, investment advice and "is it for sale" questions | `brief`, `guard_events` |
+| `recall_memory` | Memory | Recall up to 3 relevant past-search memories for a signed-in buyer; drop any that look like instructions | `memories` |
 | `check_freshness` | Tool | Compare the local snapshot with the data.gov.sg metadata (3 s timeout, once per thread) | `freshness` |
 | `refresh_gate` | Human | Ask before downloading a newer CSV; validate and swap atomically, or keep the old data | `freshness` |
 | `intake` | Agent | Gemini extracts a `BuyerProfile`; the rule parser fills gaps; preferences, carried follow-up facts and form updates are merged; the destination is resolved | `profile`, `refinement`, `destination` |
@@ -139,7 +141,7 @@ All agents use Gemini (`gemini-3.5-flash-lite` by default) through structured ou
 | Tool results | `market`, `routes`, `grants`, `evidence`, `affordability`, `tool_steps` |
 | Report | `narrative`, `canonical_report`, `approved_report`, `critic_issues`, `edit_issues`, `revision` |
 | Human and control | `clarified`, `cancelled`, `save_requested`, `reapprove`, `preapproved`, `refine`, `updates`, `refinement` |
-| Memory | `last_profile`, `last_plan`, `freshness` |
+| Memory | `history` (turns of this conversation), `memories` (recalled), `from_memory`, `last_profile`, `last_plan`, `freshness` |
 | Audit | `guard_events`, `model_calls`, `token_used`, `policy_calls`, `policy_tokens`, `model_status`, transports |
 
 `BuyerProfile` separates search filters (flat type, budget, look-back window up to 120 months, towns to search, commute destination, commute limit) from household facts (citizenship, first-timer, income, ages, employment, living arrangement, prior PHG) and loan inputs (price, valuation, debt, remaining lease). **Unknown is `null`, never a guess.**
@@ -159,15 +161,32 @@ Interrupts use `langgraph.types.interrupt` and resume with `Command(resume=…)`
 
 ---
 
-## 8. Memory and learning
+## 8. Memory: short-term and long-term
 
-| Mechanism | Scope | Store |
+The CA6123 material describes memory with Google ADK (sessions, state, in-memory or Vertex AI Memory Bank). This project implements the same concepts with LangGraph:
+
+| Concept | ADK term | Here |
 | --- | --- | --- |
-| Checkpoints | One conversation (thread) | `SqliteSaver` → `data/ckpt.db` |
-| Follow-up context | Next turn in the same thread | `last_profile`, `last_plan` in state; the gate states what changed and what was kept |
-| Preferences | Across conversations, per profile label | `SqliteStore` → `data/memory.db`, namespace `("prefs", user)`; written only when the buyer ticks "remember" |
-| Few-shot examples | Every call | `examples/intake.jsonl`, `router.jsonl`, `reports.jsonl`; top 3 by similarity |
-| Learning from approval | Future calls for that profile | Corrected plan filters become Intake examples; approved summaries become Writer examples |
+| Session | Session | One **conversation** = one LangGraph thread (`user/thread-id`), listed under **Your conversations** and resumable exactly where it stopped, including a pending decision |
+| State | State | `AdvisorState`, checkpointed after every node by `SqliteSaver` (`data/ckpt.db`): messages (brief and answer per turn in `history`), tool results and control variables |
+| Short-term memory | In-memory / external state | The checkpointer (external SQLite state). The last 3 turns of `history` are given to the Router and Intake; `last_profile`/`last_plan` carry follow-ups |
+| Long-term memory | Memory service (in-memory keyword search, or Memory Bank) | LangGraph `SqliteStore` (`data/memory.db`), one namespace per signed-in user, recalled by keyword plus local-embedding similarity |
+
+**Identity.** Sign-in is password-free in this prototype: the buyer's name keys their conversations and memory on this machine. Guests get conversations for the session and no long-term memory. The **Use my memory** switch turns recall and saving off.
+
+**What is remembered** (`hdb_advisor/memory.py`):
+
+| Namespace | Content | Written when | Used how |
+| --- | --- | --- | --- |
+| `("prefs", user)` → `profile` | Towns, commute destination, floor to avoid | The buyer ticks "remember" at the plan gate | Prefilled into the profile |
+| `("prefs", user)` → `household` | Citizenship, first-timer, living arrangement, income, ages, employment, prior PHG | **Only with explicit consent** (plan gate or calculator checkbox) | Lowest priority; shown as "From your memory" and confirmed at the plan gate |
+| `("memories", user)` | A deterministic, redacted summary of each completed search (filters, top towns, commute fit, loan and grant outcome, date) | Automatically at `finish` (no model call; newest 50 kept) | `recall_memory` returns up to 3 relevant ones; Intake and Planner see them as data; the UI lists them |
+| `("conversations", user)` | Title and timestamps of each conversation | When a turn starts | **Your conversations** list and Resume |
+| `("examples", user, role)` | Approved corrections and summaries | At approval | Few-shot examples |
+
+**Priority.** Stated in the brief > form edits > carried from this conversation > remembered > unknown. Remembered facts never override what the buyer says.
+
+**Control and safety.** **My memory** lists everything, deletes single items, exports JSON and offers **Forget everything**. Stored text is built from structured fields and passed through the PII redactor. Recalled memories that look like instructions are dropped (`memory_instruction_ignored`). Namespaces are per user, and `memory.db` is never packaged or committed. Tests: [`evals/test_memory.py`](../evals/test_memory.py).
 
 ---
 

@@ -29,6 +29,7 @@ docker compose down
 ### Using the UI
 
 1. Choose the engine in the sidebar: Gemini agents (live) or offline (rule-based, no key needed).
+   Sign in with a name (no password in this prototype) to keep **Your conversations** and **My memory** across sessions, or continue as a guest.
 2. Describe the search in your own words, then select **Run research**. One brief can combine a budget, a commute limit, grant questions and a loan estimate. The **Try an example** chips only fill the box, so you can edit them first.
 3. Read **How the assistant is handling your request**. It shows the interpreted request (with the facts still needed for grants), the research plan as step cards, the six agents and whether each has run, and a Perceive → Reason → Human → Action → Report → Learn timeline.
 4. Answer the human-in-the-loop gates as they appear. At the plan gate, **Run with these filters** runs exactly the values on screen. Clarification asks only for the facts still missing and shows what was already understood.

@@ -9,6 +9,7 @@ Run in Docker: docker compose up --build   (then open http://localhost:8501)
 """
 import os
 import hashlib
+import json
 import re
 from html import escape
 import sqlite3
@@ -35,6 +36,8 @@ from hdb_advisor.onemap import OneMap, place_label
 from hdb_advisor.policy import (GRANT_PROFILE_FIELDS, estimate_affordability, evaluate_grants, funding_split,
                                 index_rules, rules)
 from hdb_advisor.report import commute_headline, describe_missing, ranked_towns
+from hdb_advisor.memory import (forget, forget_everything, list_conversations, list_memory, now_sg,
+                                record_conversation, remember_household)
 from hdb_advisor.state import MAX_MONTHS_BACK, BuyerProfile
 
 ROOT = Path(__file__).resolve().parent
@@ -103,6 +106,7 @@ PROFILE_LABELS = {
 # Each graph node, the agentic stage it belongs to, and a plain-language label for the live progress feed.
 NODES = {
     "input_guard": ("Perceive", "Input guard redacted identifiers and screened for injection"),
+    "recall_memory": ("Perceive", "Recalled relevant memories from past conversations"),
     "check_freshness": ("Perceive", "Checked whether the transaction snapshot is current"),
     "refresh_gate": ("Human", "Refresh decision recorded"),
     "intake": ("Perceive", "Intake agent built the buyer profile"),
@@ -209,7 +213,9 @@ def advisor(live: bool, mcp: bool):
 
 def config() -> dict:
     user = st.session_state.user
-    return {"configurable": {"thread_id": f"{user}/{st.session_state.thread}", "user_id": user},
+    # Long-term memory is used only for a signed-in buyer who has it switched on; guests get none.
+    memory = bool(st.session_state.get("account")) and st.session_state.get("use_memory", True)
+    return {"configurable": {"thread_id": f"{user}/{st.session_state.thread}", "user_id": user, "memory": memory},
             "recursion_limit": RECURSION_LIMIT}
 
 
@@ -242,18 +248,106 @@ def execute(app, payload):
 def queue(payload):
     if not isinstance(payload, Command):
         st.session_state.active_config = config()  # A new turn binds the conversation it belongs to.
+        # Register the conversation so it can be found and resumed later (title = its first brief).
+        record_conversation(storage()[1], st.session_state.user, st.session_state.active_config["configurable"]["thread_id"],
+                            payload.get("brief", ""))
     st.session_state.queued = payload
 
 
 # ---------------------------------------------------------------------------------------------------
 # Sidebar: engine, approvals, memory label and data provenance.
 # ---------------------------------------------------------------------------------------------------
-defaults = {"thread": uuid.uuid4().hex[:12], "user": "demo", "result": None, "gate": None, "queued": None,
+st.session_state.setdefault("guest_id", f"guest-{uuid.uuid4().hex[:8]}")
+defaults = {"thread": uuid.uuid4().hex[:12], "user": st.session_state.guest_id, "account": None, "use_memory": True,
+            "result": None, "gate": None, "queued": None,
             "trail": [], "last_brief": EXAMPLES["All-in-one: price, commute and grants"]}
 for key, value in defaults.items():
     st.session_state.setdefault(key, value)
 # Streamlit drops a widget's state while it is hidden (during a gate), so restore the last brief.
 st.session_state.setdefault("brief", st.session_state.last_brief)
+
+def account_panel():
+    """Password-free sign-in for this prototype: the name keys the buyer's memory on this machine."""
+    store = storage()[1]
+    account = st.session_state.get("account")
+    if account:
+        st.markdown(f"Signed in as **{escape(account)}**")
+        st.session_state.use_memory = st.toggle("Use my memory", value=st.session_state.get("use_memory", True),
+                                                help="Recall past searches and remembered details in new conversations.")
+        if st.button("Sign out", use_container_width=True):
+            fresh_start(profile_switched=False, user=st.session_state.guest_id, account=None)
+            st.rerun()
+        return
+    with st.form("sign-in", border=False):
+        name = st.text_input("Your name", placeholder="e.g. ken", help="No password in this prototype. "
+                             "Your name keys your conversations and memory on this machine.")
+        if st.form_submit_button("Sign in", use_container_width=True):
+            user = re.sub(r"[^a-z0-9_-]", "-", name.strip().lower())[:32].strip("-")
+            if not user or redact(name)[1]:
+                st.warning("Use a short name without personal identifiers.")
+            else:
+                store.put(("users", user), "profile", {"name": name.strip()[:40], "last_seen": now_sg().isoformat(timespec="minutes")})
+                # Each account has its own conversations; signing in never resumes a guest's pending decision.
+                fresh_start(profile_switched=True, user=user, account=name.strip()[:40])
+                st.rerun()
+    st.caption("Browsing as a guest: conversations last for this session and nothing is remembered.")
+
+
+def conversations_panel():
+    """Short-term memory per conversation: list this user's conversations and resume one exactly where it was."""
+    items = list_conversations(storage()[1], st.session_state.user)
+    if not items:
+        return
+    st.divider()
+    st.subheader("Your conversations")
+    current = f"{st.session_state.user}/{st.session_state.thread}"
+    for item in items[:8]:
+        label = f"{item['title'][:42]}{'…' if len(item['title']) > 42 else ''} · {item['updated'][5:10]}"
+        if item["thread"] == current:
+            st.caption(f"▶ {label}")
+        elif st.button(label, key=f"resume-{item['thread']}", use_container_width=True):
+            st.session_state.resume_thread = item["thread"]
+            st.rerun()
+
+
+def memory_panel():
+    """Everything the assistant remembers about the signed-in buyer, with delete and export."""
+    if not st.session_state.get("account"):
+        return
+    store, user = storage()[1], st.session_state.user
+    memory = list_memory(store, user)
+    count = len(memory["searches"]) + bool(memory["preferences"]) + bool(memory["household"])
+    st.divider()
+    with st.expander(f"My memory ({count})", expanded=False):
+        if memory["preferences"]:
+            prefs = ", ".join(f"{PROFILE_LABELS[k][0]}: {PROFILE_LABELS[k][1](v)}" for k, v in memory["preferences"].items()
+                              if k in PROFILE_LABELS)
+            st.markdown(f"**Preferences** {escape(prefs)}")
+            if st.button("Forget preferences", key="forget-prefs"):
+                forget(store, user, "preferences")
+                st.rerun()
+        if memory["household"]:
+            facts = ", ".join(f"{PROFILE_LABELS[k][0]}: {PROFILE_LABELS[k][1](v)}" for k, v in memory["household"].items()
+                              if k in PROFILE_LABELS)
+            st.markdown(f"**Household (kept with your consent)** {escape(facts)}")
+            if st.button("Forget household details", key="forget-household"):
+                forget(store, user, "household")
+                st.rerun()
+        if memory["searches"]:
+            st.markdown("**Past searches**")
+            for item in memory["searches"][:10]:
+                st.caption(item["text"])
+                if st.button("Forget this", key=f"forget-{item['key']}"):
+                    forget(store, user, "search", item["key"])
+                    st.rerun()
+        if not count:
+            st.caption("Nothing remembered yet. Completed searches are summarised here.")
+        st.download_button("Export my memory (JSON)", json.dumps(memory, indent=2, ensure_ascii=False),
+                           file_name=f"hdb-advisor-memory-{user}.json", mime="application/json")
+        if st.button("Forget everything", type="primary"):
+            forget_everything(store, user)
+            st.rerun()
+
 
 def fresh_start(**extra):
     """A new conversation starts empty: no result, no pending decision and no previous brief in the box.
@@ -279,20 +373,15 @@ with st.sidebar:
     save = st.toggle("Save the approved shortlist", value=False,
                      help="Adds an output approval gate. The JSON export is written only after you approve.")
     st.session_state.save_flag = save
-    user = st.text_input("Preference profile", value=st.session_state.user,
-                         help="A local label. Remembered town, floor and anchor preferences are stored under it.")
-    if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", user) and not redact(user)[1]:
-        if user != st.session_state.user:
-            # Each preference profile has its own conversations; switching never resumes another's decision.
-            fresh_start(profile_switched=True, user=user)
-    else:
-        st.warning("Use letters, digits, hyphens or underscores only.")
+    account_panel()
     if st.button("New conversation", use_container_width=True):
         fresh_start()
         st.rerun()
     st.caption(f"Thread `{st.session_state.thread}`")
     if st.session_state.pop("profile_switched", False):
-        st.info("Started a new conversation for this profile.")
+        st.info("Started a new conversation for this account.")
+    conversations_panel()
+    memory_panel()
 
     st.divider()
     st.subheader("Data provenance")
@@ -313,6 +402,16 @@ with st.sidebar:
         st.caption("Phoenix tracing is off. Set PHOENIX_TRACING=true (on by default in Docker).")
 
 app = advisor(live, mcp)
+
+if st.session_state.get("resume_thread"):
+    # Resume a past conversation exactly where it was: its state, its result and any pending decision.
+    thread_id = st.session_state.pop("resume_thread")
+    st.session_state.update(thread=thread_id.split("/", 1)[1], active_config=None, trail=[], brief="")
+    snapshot = app.get_state(config())
+    pending = [item for task in snapshot.tasks for item in task.interrupts]
+    st.session_state.result = snapshot.values or None
+    st.session_state.gate = pending[0].value if pending else None
+    st.rerun()  # Redraw so the sidebar marks the resumed conversation as current.
 
 st.markdown("""
 <div class="hero">
@@ -398,6 +497,14 @@ def interpreted_request(values) -> str:
             f"{values.get('confidence', 0):.2f}</div><div style='margin-top:.5rem'>"
             + ("".join(facts) or "<span class='muted'>No search filters were found in the brief.</span>") + "</div>")
     html += destination_note(values)
+    from_memory = values.get("from_memory") or []
+    if from_memory:
+        names = ", ".join(PROFILE_LABELS[k][0].lower() for k in from_memory if k in PROFILE_LABELS)
+        html += f"<div class='muted' style='margin-top:.4rem'>From your memory: {escape(names)}</div>"
+    if values.get("memories"):
+        recalled = "".join(f"<li>{escape(m['text'])}</li>" for m in values["memories"])
+        html += (f"<div class='muted' style='margin-top:.4rem'>Using what I remember from earlier conversations:"
+                 f"<ul style='margin:.2rem 0 0 1rem'>{recalled}</ul></div>")
     if "grants" in (values.get("plan") or []):
         missing = [key for key in GRANT_PROFILE_FIELDS if profile.get(key) in (None, [])]
         if missing:
@@ -677,6 +784,9 @@ def plan_gate(gate):
                 facts.insert(5, "flat_type")
             wanted |= fact_inputs(facts, {**household, **current}, "plan")
         remember = st.checkbox("Remember my towns, floor and commute destination for future conversations") if searching else False
+        keep_household = (st.checkbox("Remember these household facts for future conversations",
+                                      help="Stored only for your account. You can view or delete them under My memory.")
+                          if screening and st.session_state.get("account") else False)
         run, cancel, _ = st.columns([1.4, 1, 1.6])
         submitted = run.form_submit_button(action, type="primary", use_container_width=True)
         cancelled = cancel.form_submit_button("Cancel", use_container_width=True)
@@ -694,9 +804,10 @@ def plan_gate(gate):
             except ValueError:
                 st.error("One of the values is not valid. Check the ages (18 to 120) and the numbers.")
                 return
-            queue(Command(resume={"action": "edit", "changes": changes, "remember": remember}))
+            queue(Command(resume={"action": "edit", "changes": changes, "remember": remember,
+                                  "remember_household": keep_household}))
         else:
-            queue(Command(resume={"action": "approve", "remember": remember}))
+            queue(Command(resume={"action": "approve", "remember": remember, "remember_household": keep_household}))
         st.rerun()
 
 
@@ -990,7 +1101,12 @@ def calculator(values):
         st.caption(f"{money(grants_applied)} + {money(loan_applied)} + {money(balance)} = {money(calc.purchase_price)}. "
                    "The loan applied is the smaller of the borrowing ceiling and the price left after grants. Grants are "
                    "credited to CPF and offset the price. Valuation differences, CPF usage limits and fees are not included.")
+    keep = (st.checkbox("Remember my household details for future conversations", key=f"keep-{key}",
+                        help="Stored only for your account; view or delete under My memory.")
+            if st.session_state.get("account") else False)
     if st.button("Use these details in the research", help="Re-runs the agents with these details in this conversation."):
+        if keep:
+            remember_household(storage()[1], st.session_state.user, calc)
         updates = {k: v for k, v in calc.model_dump().items() if v not in (None, []) and k not in ("months_back",)}
         st.session_state.notice = ("Updated the research with your household and loan details. "
                                    "The loan and grant results are in the Answer and the Grants and loan tab.")
@@ -1019,6 +1135,9 @@ def trace_tab(values):
     st.caption(f"Engine {values.get('model_status', 'offline')} · route transport "
                f"{values.get('route_transport') or 'n/a'} · freshness "
                f"{(values.get('freshness') or {}).get('status', 'n/a')}")
+    st.caption(f"Memory: {len(values.get('memories') or [])} past searches recalled · "
+               f"{len(values.get('history') or [])} turns in this conversation · "
+               f"{'on' if (st.session_state.get('account') and st.session_state.get('use_memory', True)) else 'off (guest or switched off)'}")
     evidence = values.get("evidence") or []
     if evidence:
         st.markdown("**Policy evidence retrieved**")
@@ -1212,4 +1331,11 @@ elif gate is None and values and values.get("canonical_report"):
         grants_tab(values)
     with trace:
         trace_tab(values)
+    history = values.get("history") or []
+    if len(history) > 1:
+        with st.expander(f"Earlier in this conversation ({len(history) - 1})", expanded=False):
+            for turn in history[:-1][::-1]:
+                st.markdown(f"**{escape(turn['brief'])}**  <span class='muted'>{turn['at'][:16].replace('T', ' ')}</span>",
+                            unsafe_allow_html=True)
+                st.caption(turn["answer"])
     handling_panel(values, None, title="How the assistant handled this request")
