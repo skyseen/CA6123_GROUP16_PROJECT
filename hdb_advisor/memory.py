@@ -223,8 +223,28 @@ def forget(store, user_id, kind: str, key: str | None = None):
         store.delete(("memories", user_id), key)
 
 
-def forget_everything(store, user_id):
-    """Delete every long-term memory for this user: preferences, household facts, searches, examples, history."""
+def user_threads(store, user_id, checkpointer=None) -> set[str]:
+    """Every saved conversation thread of this user: from the conversation list and the checkpointer itself."""
+    threads = {c["thread"] for c in list_conversations(store, user_id)}
+    prefix = f"{user_id}/"
+    conn = getattr(checkpointer, "conn", None)
+    if conn is not None:
+        # substr rather than LIKE, so "_" in a name is not treated as a wildcard.
+        rows = conn.execute("SELECT DISTINCT thread_id FROM checkpoints WHERE substr(thread_id, 1, ?) = ?",
+                            (len(prefix), prefix))
+        threads |= {row[0] for row in rows}
+    storage = getattr(checkpointer, "storage", None)
+    if isinstance(storage, dict):
+        threads |= {t for t in storage if isinstance(t, str) and t.startswith(prefix)}
+    return {t for t in threads if t.startswith(prefix)}
+
+
+def forget_everything(store, user_id, checkpointer=None):
+    """Delete everything kept for this user: long-term memory, the conversation list, and (with a checkpointer)
+    every saved conversation state, so nothing can be resumed or read back afterwards."""
+    if checkpointer is not None:
+        for thread in user_threads(store, user_id, checkpointer):
+            checkpointer.delete_thread(thread)
     if store is None:
         return
     for namespace in (("prefs", user_id), ("memories", user_id), ("conversations", user_id),

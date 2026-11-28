@@ -172,7 +172,7 @@ The CA6123 material describes memory with Google ADK (sessions, state, in-memory
 | Short-term memory | In-memory / external state | The checkpointer (external SQLite state). The last 3 turns of `history` are given to the Router and Intake; `last_profile`/`last_plan` carry follow-ups |
 | Long-term memory | Memory service (in-memory keyword search, or Memory Bank) | LangGraph `SqliteStore` (`data/memory.db`), one namespace per signed-in user, recalled by keyword plus local-embedding similarity |
 
-**Identity.** Sign-in is password-free in this prototype: the buyer's name keys their conversations and memory on this machine. Guests get conversations for the session and no long-term memory. The **Use my memory** switch turns recall and saving off.
+**Identity.** Anyone who enters the same name on this app instance can reopen its conversations and manage its saved memory. Guests get a session-specific identity. Switching off **Use my memory** stops every long-term read and write: past-search summaries, saved preferences, household facts and learned examples. The consent checkboxes are hidden while it is off. The current conversation still keeps its own short-term context.
 
 **What is remembered** (`hdb_advisor/memory.py`):
 
@@ -186,7 +186,7 @@ The CA6123 material describes memory with Google ADK (sessions, state, in-memory
 
 **Priority.** Stated in the brief > form edits > carried from this conversation > remembered > unknown. Remembered facts never override what the buyer says.
 
-**Control and safety.** **My memory** lists everything, deletes single items, exports JSON and offers **Forget everything**. Stored text is built from structured fields and passed through the PII redactor. Recalled memories that look like instructions are dropped (`memory_instruction_ignored`). Namespaces are per user, and `memory.db` is never packaged or committed. Tests: [`evals/test_memory.py`](../evals/test_memory.py).
+**Control and safety.** **My memory** displays preferences, consented household facts and recent searches. The JSON export contains the saved preferences, household facts and all retained search summaries. **Forget everything** clears these items, saved examples and the conversation list, deletes every saved conversation of that user from `data/ckpt.db` (`forget_everything` with the checkpointer), and clears the screen. Search summaries pass through the PII redactor. Recall drops text that looks like instructions (`memory_instruction_ignored`). The submission bundle excludes `memory.db` and `ckpt.db`. [Memory tests](../evals/test_memory.py)
 
 ---
 

@@ -211,10 +211,15 @@ def advisor(live: bool, mcp: bool):
     return build_graph(settings, saver, store)
 
 
+def memory_enabled() -> bool:
+    """Long-term memory is on only for a signed-in buyer who has not switched it off."""
+    return bool(st.session_state.get("account")) and st.session_state.get("use_memory", True)
+
+
 def config() -> dict:
     user = st.session_state.user
     # Long-term memory is used only for a signed-in buyer who has it switched on; guests get none.
-    memory = bool(st.session_state.get("account")) and st.session_state.get("use_memory", True)
+    memory = memory_enabled()
     return {"configurable": {"thread_id": f"{user}/{st.session_state.thread}", "user_id": user, "memory": memory},
             "recursion_limit": RECURSION_LIMIT}
 
@@ -272,8 +277,10 @@ def account_panel():
     account = st.session_state.get("account")
     if account:
         st.markdown(f"Signed in as **{escape(account)}**")
-        st.session_state.use_memory = st.toggle("Use my memory", value=st.session_state.get("use_memory", True),
-                                                help="Recall past searches and remembered details in new conversations.")
+        st.session_state.use_memory = st.toggle(
+            "Use my memory", value=st.session_state.get("use_memory", True),
+            help="On: recall and save past searches, preferences and (with consent) household details. "
+                 "Off: nothing is read from or saved to long-term memory; this conversation still keeps its own context.")
         if st.button("Sign out", use_container_width=True):
             fresh_start(profile_switched=False, user=st.session_state.guest_id, account=None)
             st.rerun()
@@ -344,17 +351,21 @@ def memory_panel():
             st.caption("Nothing remembered yet. Completed searches are summarised here.")
         st.download_button("Export my memory (JSON)", json.dumps(memory, indent=2, ensure_ascii=False),
                            file_name=f"hdb-advisor-memory-{user}.json", mime="application/json")
-        if st.button("Forget everything", type="primary"):
-            forget_everything(store, user)
+        if st.button("Forget everything", type="primary",
+                     help="Deletes your saved memory, your conversation list and every saved conversation."):
+            forget_everything(store, user, storage()[0])
+            # Nothing of the forgotten conversations stays on screen either.
+            fresh_start(brief_reuse=False)
+            st.session_state.previous_brief = ""
             st.rerun()
 
 
-def fresh_start(**extra):
+def fresh_start(brief_reuse: bool = True, **extra):
     """A new conversation starts empty: no result, no pending decision and no previous brief in the box.
 
     The previous brief is kept aside so the buyer can choose to reuse it.
     """
-    previous = st.session_state.get("brief") or st.session_state.get("last_brief") or ""
+    previous = (st.session_state.get("brief") or st.session_state.get("last_brief") or "") if brief_reuse else ""
     st.session_state.update(thread=uuid.uuid4().hex[:12], result=None, gate=None, trail=[], active_config=None,
                             brief="", last_brief="", previous_brief=previous, **extra)
 
@@ -783,10 +794,15 @@ def plan_gate(gate):
             if not searching:
                 facts.insert(5, "flat_type")
             wanted |= fact_inputs(facts, {**household, **current}, "plan")
-        remember = st.checkbox("Remember my towns, floor and commute destination for future conversations") if searching else False
-        keep_household = (st.checkbox("Remember these household facts for future conversations",
-                                      help="Stored only for your account. You can view or delete them under My memory.")
-                          if screening and st.session_state.get("account") else False)
+        remember = keep_household = False
+        if memory_enabled():
+            remember = (st.checkbox("Remember my towns, floor and commute destination for future conversations")
+                        if searching else False)
+            keep_household = (st.checkbox("Remember these household facts for future conversations",
+                                          help="Stored only for your account. You can view or delete them under My memory.")
+                              if screening else False)
+        elif st.session_state.get("account"):
+            st.caption("Memory is off: nothing from this plan will be remembered.")
         run, cancel, _ = st.columns([1.4, 1, 1.6])
         submitted = run.form_submit_button(action, type="primary", use_container_width=True)
         cancelled = cancel.form_submit_button("Cancel", use_container_width=True)
@@ -1103,9 +1119,9 @@ def calculator(values):
                    "credited to CPF and offset the price. Valuation differences, CPF usage limits and fees are not included.")
     keep = (st.checkbox("Remember my household details for future conversations", key=f"keep-{key}",
                         help="Stored only for your account; view or delete under My memory.")
-            if st.session_state.get("account") else False)
+            if memory_enabled() else False)
     if st.button("Use these details in the research", help="Re-runs the agents with these details in this conversation."):
-        if keep:
+        if keep and memory_enabled():
             remember_household(storage()[1], st.session_state.user, calc)
         updates = {k: v for k, v in calc.model_dump().items() if v not in (None, []) and k not in ("months_back",)}
         st.session_state.notice = ("Updated the research with your household and loan details. "

@@ -98,3 +98,29 @@ def test_the_buyer_can_see_delete_and_forget_everything():
     forget_everything(store, "zoe")
     assert list_memory(store, "zoe") == {"preferences": {}, "household": {}, "searches": []}
     assert list_conversations(store, "zoe") == []
+
+
+def test_memory_off_neither_saves_nor_reads_long_term_memory():
+    store = InMemoryStore()
+    app = build_graph(Settings(DB), InMemorySaver(), store)
+    brief = "SC/SC first-timers, income 7000, ages 30 and 32, 4-room under S$600k in Tampines, check grants"
+    run(app, brief, cfg("off", memory=False),
+        plan={"action": "approve", "remember": True, "remember_household": True})
+    assert list_memory(store, "off") == {"preferences": {}, "household": {}, "searches": []}
+    store.put(("prefs", "off"), "profile", {"towns": ["YISHUN"]})  # saved earlier while memory was on
+    later, _ = run(app, "4-room under S$600k", cfg("off", memory=False))
+    assert later["profile"]["towns"] == []
+
+
+def test_forget_everything_deletes_saved_conversations():
+    store, saver = InMemoryStore(), InMemorySaver()
+    app = build_graph(Settings(DB), saver, store)
+    config = cfg("gone", thread="t1")
+    run(app, "4-room under S$600k", config)
+    record_conversation(store, "gone", "gone/t1", "4-room under S$600k")
+    other = cfg("stays", thread="t1")
+    run(app, "4-room under S$600k", other)
+    assert app.get_state(config).values
+    forget_everything(store, "gone", saver)
+    assert not app.get_state(config).values and list_memory(store, "gone")["searches"] == []
+    assert app.get_state(other).values  # another user's conversation is untouched

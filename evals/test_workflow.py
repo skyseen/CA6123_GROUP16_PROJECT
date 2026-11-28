@@ -88,15 +88,21 @@ def test_preferences_and_approved_save(fixture_db, tmp_path):
     store = InMemoryStore()
     directory = tmp_path / "shortlists"
     app = build_graph(Settings(fixture_db, export=directory), InMemorySaver(), store)
-    result, gates = run(app, "4-room under 600k", "save", save=True, decisions={
+    def signed_in(scenario):  # Preferences are long-term memory: kept only when memory is on.
+        config = config_for(scenario)
+        config["configurable"]["memory"] = True
+        return config
+    result, gates = run(app, "4-room under 600k", "save", save=True, config=signed_in("save"), decisions={
         "confirm_plan": {"action": "edit", "changes": {"towns": ["TAMPINES"]}, "remember": True},
         "approve_output": {"action": "approve"},
     })
     assert gates == ["confirm_plan", "approve_output"]
     assert json.loads(Path(result["saved_path"]).read_text())["report"] == result["canonical_report"]
     assert len(list(directory.glob("*.json"))) == 1
-    next_result, _ = run(app, "4-room under 620k", "preferences")
+    next_result, _ = run(app, "4-room under 620k", "preferences", config=signed_in("preferences"))
     assert next_result["market"]["query"]["towns"] == ["TAMPINES"]
+    memory_off, _ = run(app, "4-room under 620k", "memory-off")
+    assert memory_off["market"]["query"].get("towns", []) == []
     examples = store.search(("examples", "test", "intake"))
     assert len(examples) == 1 and "TAMPINES" in examples[0].value["output"]
 

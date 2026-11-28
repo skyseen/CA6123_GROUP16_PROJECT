@@ -118,7 +118,9 @@ def build_graph(settings: Settings, checkpointer, store=None):
         if model is None or previous_calls >= MODEL_CALL_LIMIT:
             return fallback, {}
         user_id = config.get("configurable", {}).get("user_id", "local")
-        samples = examples_for(store, user_id, example_role, state["brief"]) if example_role else []
+        # Seed examples always apply; this user's learned examples only when long-term memory is on.
+        samples = (examples_for(store if memory_on(config) else None, user_id, example_role, state["brief"])
+                   if example_role else [])
         meta = {"model_calls": previous_calls + 1, "model_status": "gemini"}
         try:
             result, tokens = model.call(role, schema, context, samples)
@@ -198,7 +200,8 @@ def build_graph(settings: Settings, checkpointer, store=None):
                 fields = filled | fields
                 meta["guard_events"] = list(dict.fromkeys(meta.get("guard_events", state["guard_events"])
                                                           + ["intake_backfill"]))
-        known = preferences(store, user_id)
+        # Long-term memory (preferences and household facts) is read only when it is on for this buyer.
+        known = preferences(store, user_id) if memory_on(config) else {}
         # Household facts are remembered only with consent, and rank below anything stated or carried.
         remembered = household_memory(store, user_id) if memory_on(config) else {}
         known = remembered | known
@@ -332,7 +335,7 @@ def build_graph(settings: Settings, checkpointer, store=None):
             except ValueError:
                 return {"cancelled": True, "guard_events": state["guard_events"] + ["invalid_plan_edit"]}
         user_id = config.get("configurable", {}).get("user_id", "local")
-        if decision.get("remember") is True:
+        if decision.get("remember") is True and memory_on(config):
             remember(store, user_id, p)
         if decision.get("remember_household") is True and memory_on(config):
             # Explicit consent from the plan gate: keep these household facts for future conversations.
@@ -340,7 +343,7 @@ def build_graph(settings: Settings, checkpointer, store=None):
         if action == "edit":
             example = p.model_dump(include=search_fields, exclude_none=True)
             # Record corrected filters with a generic prompt. Household information never enters the example store.
-            record_example(store, user_id, "intake", {
+            record_example(store if memory_on(config) else None, user_id, "intake", {
                 "input": f"Corrected market brief about {p.flat_type or 'resale flats'}",
                 "output": json.dumps(example),
             })
@@ -486,7 +489,8 @@ def build_graph(settings: Settings, checkpointer, store=None):
         user_id = config.get("configurable", {}).get("user_id", "local")
         if narrative:
             # Learn from approved experience: the approved summary becomes a few-shot example for this user.
-            record_example(store, user_id, "reports", {"input": state["intent"], "output": narrative["summary"]})
+            record_example(store if memory_on(config) else None, user_id, "reports",
+                           {"input": state["intent"], "output": narrative["summary"]})
         path = None
         events = state["guard_events"]
         transport = ""

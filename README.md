@@ -136,6 +136,8 @@ python -m scripts.package_submission --group GROUP_NUMBER
 
 The assignment calls for a continuous video of up to 12 minutes, with each team member appearing and narrating in their own voice. A possible running order is one minute for the problem and scope, two for Perceive and Reason, three for the Action demo, two for Learn and human oversight, and three for evaluations, limits and contributions. Each member should be able to trace one sample from the brief through their code and explain an evaluated failure mode.
 
+When opening **My memory**, say “This prototype signs you in with just a name. Anyone using this copy of the app can enter the same name, reopen its conversations, and view, export or delete its saved memory.”
+
 Put an accurate AI-use acknowledgment on the final slide. For example, “We used Codex to assist with implementation, tests, and the walkthrough. The team reviewed the code, validated the demo, and prepared and narrated the presentation.” Use that wording only after the team has done those steps.
 
 ## Public data attribution
