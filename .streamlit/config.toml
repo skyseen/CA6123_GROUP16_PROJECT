@@ -1,10 +1,22 @@
 [theme]
 base = "light"
 primaryColor = "#0F766E"
-backgroundColor = "#FAFAF7"
-secondaryBackgroundColor = "#EFEEE8"
+backgroundColor = "#FAFAF8"
+# Inputs sit on white with a thin border, so they never look disabled.
+secondaryBackgroundColor = "#FFFFFF"
 textColor = "#1C2A33"
 font = "sans serif"
+# Larger root size: every widget, label and custom style scales from it (readable on screen and in the video).
+baseFontSize = 18
+borderColor = "#DEDBD3"
+showWidgetBorder = true
+baseRadius = "10px"
+buttonRadius = "10px"
+dataframeHeaderBackgroundColor = "#F4F3EF"
+
+[theme.sidebar]
+backgroundColor = "#F2F1EC"
+secondaryBackgroundColor = "#FFFFFF"
 
 [server]
 headless = true

@@ -294,12 +294,12 @@ def test_plan_edit_is_the_budget_that_runs(fixture_db):
     assert "S$600,000" not in result["canonical_report"]
 
 
-def test_follow_up_keeps_the_search_and_changes_only_the_town():
+def test_follow_up_keeps_the_search_and_changes_only_the_town(fixture_db):
     """Review issue 2: "What about Woodlands instead?" keeps flat type, budget, commute and grant steps."""
     from evals.harness import config_for
     from hdb_advisor.graph import prepare_turn
 
-    app = build_graph(Settings(Path("data/hdb.db")), InMemorySaver())
+    app = build_graph(Settings(Path("data/hdb.db") if Path("data/hdb.db").is_file() else fixture_db), InMemorySaver())
     config = config_for("follow-up")
     approve = {"confirm_plan": {"action": "approve"}, "clarify": {"action": "skip"}}
     resume_all(app, prepare_turn("4-room under S$600k within 45 minutes of NTU, and check grants"), config, approve)

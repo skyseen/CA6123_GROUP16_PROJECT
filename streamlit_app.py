@@ -33,9 +33,9 @@ from hdb_advisor.guards import inspect_input, redact
 from hdb_advisor.market import provenance
 from hdb_advisor.observability import enable_phoenix, phoenix_enabled
 from hdb_advisor.onemap import OneMap, place_label
-from hdb_advisor.policy import (GRANT_PROFILE_FIELDS, estimate_affordability, evaluate_grants, funding_split,
+from hdb_advisor.policy import (estimate_affordability, evaluate_grants, funding_split,
                                 index_rules, rules)
-from hdb_advisor.report import commute_headline, describe_missing, ranked_towns
+from hdb_advisor.report import commute_headline, commute_split, describe_missing, ranked_towns
 from hdb_advisor.memory import (forget, forget_everything, list_conversations, list_memory, now_sg,
                                 record_conversation, remember_household)
 from hdb_advisor.state import MAX_MONTHS_BACK, BuyerProfile
@@ -48,7 +48,7 @@ PHOENIX_URL = os.getenv("PHOENIX_PUBLIC_URL", "http://localhost:6006")
 FLAT_TYPES = ["1 ROOM", "2 ROOM", "3 ROOM", "4 ROOM", "5 ROOM", "EXECUTIVE", "MULTI-GENERATION"]
 # Example prompts only fill the editable brief. The graph decides which agents and tools a brief needs.
 EXAMPLES = {
-    "All-in-one: price, commute and grants": ("Find 4-room flats under S$600k within 45 minutes of Raffles Place MRT "
+    "All-in-one": ("Find 4-room flats under S$600k within 45 minutes of Raffles Place MRT "
                                               "and check what information you need for grants."),
     "Commute shortlist": "4-room under S$600k, last 12 months, weekday commute to NTU within 45 min",
     "Grants for a couple": ("First-timer SC/SC couple, ages 30 and 32, household income 7000, 4-room under 600k, "
@@ -133,48 +133,110 @@ STATUS_COLOURS = {"Within limit": "#0F766E", "Above limit": "#D97706", "Straight
 st.set_page_config(page_title="HDB Resale Research Advisor", page_icon="🏠", layout="wide")
 st.markdown("""
 <style>
-.block-container {padding-top: 2rem; max-width: 1200px;}
-.hero {background: linear-gradient(120deg, #0F766E 0%, #115E59 55%, #134E4A 100%); color: #F0FDFA;
-       border-radius: 18px; padding: 1.6rem 1.8rem; margin-bottom: 1.2rem;}
-.hero h1 {color: #FFFFFF; font-size: 1.9rem; margin: 0 0 .35rem 0;}
-.hero p {margin: 0; opacity: .92; font-size: 1rem;}
-.chips {margin-top: .8rem;}
-.chip {display: inline-block; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.25);
-       border-radius: 999px; padding: .15rem .7rem; margin: 0 .35rem .35rem 0; font-size: .8rem;}
-.stage {display: inline-block; border-radius: 6px; padding: .05rem .45rem; font-size: .72rem; font-weight: 600;
+.block-container {padding-top: 3.2rem; max-width: 1240px;}
+h1, h2, h3 {letter-spacing: -.01em;}
+/* Narrower sidebar with even spacing. */
+section[data-testid="stSidebar"] {width: 315px !important; min-width: 315px !important;}
+/* Every bordered container is a card: white, rounded, a faint shadow. */
+div[data-testid="stVerticalBlockBorderWrapper"] {background: #FFFFFF; border-radius: 16px !important;
+    box-shadow: 0 1px 2px rgba(20, 30, 40, .04), 0 4px 16px rgba(20, 30, 40, .04);}
+/* Top bar shared by every screen. */
+.brand {display: flex; align-items: center; gap: .6rem; font-weight: 700; font-size: 1.1rem;}
+.brand .logo {width: 1.45rem; height: 1.45rem; border-radius: .4rem; background: #0F766E; display: inline-block;}
+.topline {border-bottom: 1px solid #E4E2DB; margin: .2rem 0 1.6rem 0;}
+.hero {text-align: center; margin: 2.6rem 0 1.6rem 0;}
+.hero h1 {font-size: 2.3rem; line-height: 1.15; margin: 0 0 .6rem 0; padding: 0;}
+.hero p {font-size: 1.08rem; color: #475569; margin: 0;}
+.card-title {font-size: 1.25rem; font-weight: 700; margin: 0 0 .6rem 0;}
+.summary {font-size: .98rem; color: #334155;}
+.foot-line {border-top: 1px solid #E4E2DB; margin: .4rem 0 .2rem 0;}
+/* Larger tab labels with more room between them. */
+[data-testid="stTab"] p {font-size: 1.05rem;}
+[role="tablist"] {gap: 1.6rem;}
+/* Header: title, one-line purpose and a three-step progress bar for the human-in-the-loop flow. */
+.app-title {font-size: 2.1rem; font-weight: 700; margin: 0 0 .2rem 0; color: #1C2A33;}
+.app-title.small {font-size: 1.3rem; margin: 0;}
+.app-sub {color: #475569; font-size: 1rem; margin: 0 0 1.1rem 0;}
+.stepper {display: flex; align-items: center; justify-content: flex-end; font-size: .95rem; color: #64748B; margin: 0;
+          white-space: nowrap;}
+.stepper .s {display: flex; align-items: center; gap: .35rem;}
+.stepper .d {width: 1.15rem; height: 1.15rem; border-radius: 50%; border: 1.5px solid #CBD5E1; display: inline-grid;
+             place-items: center; font-size: .8rem; font-weight: 700;}
+.stepper .done .d {background: #0F766E; border-color: #0F766E; color: #FFFFFF;}
+.stepper .now {color: #1C2A33; font-weight: 700;} .stepper .now .d {border-color: #0F766E; color: #0F766E;}
+.stepper .bar {width: 2.2rem; height: 1.5px; background: #CBD5E1; margin: 0 .5rem;}
+.stepper .bar.on {background: #0F766E;}
+.conv-cur {border: 1px solid #D6D3CA; background: #FFFFFF; border-radius: 8px; padding: .4rem .7rem;
+            font-size: .95rem; margin-bottom: .4rem;}
+.sb-label {font-size: .9rem; color: #1C2A33; margin: .6rem 0 .25rem 0;}
+.stage {display: inline-block; border-radius: 6px; padding: .05rem .45rem; font-size: .85rem; font-weight: 600;
         color: white; margin-right: .5rem; min-width: 4.6rem; text-align: center;}
-.badge {display: inline-block; border-radius: 999px; padding: .1rem .6rem; font-size: .75rem; font-weight: 600;}
+.badge {display: inline-block; border-radius: 999px; padding: .1rem .6rem; font-size: .88rem; font-weight: 600;}
 .b-ok {background: #CCFBF1; color: #115E59;} .b-warn {background: #FEF3C7; color: #92400E;}
-.b-no {background: #FEE2E2; color: #991B1B;} .b-info {background: #E0E7FF; color: #3730A3;}
-.gate {border: 2px solid #BE185D; border-radius: 14px; padding: 1rem 1.2rem; background: #FFF7FB; margin: .6rem 0 1rem;}
-.gate h3 {margin-top: 0; color: #9D174D;}
+.b-no {background: #FEE2E2; color: #991B1B;} .b-info {background: #EEF2F1; color: #475569;}
+.gate {border: 1px solid #E3E1DA; border-left: 4px solid #0F766E; border-radius: 12px; padding: 1rem 1.2rem;
+       background: #FFFFFF; margin: .2rem 0 1rem;}
+.gate h3 {margin: 0 0 .3rem 0; font-size: 1.35rem;}
 .card {border: 1px solid #E5E3DA; border-radius: 12px; padding: .9rem 1rem; background: #FFFFFF; margin-bottom: .7rem;}
-.muted {color: #64748B; font-size: .85rem;}
-.panel {border: 1px solid #E5E3DA; border-radius: 14px; background: #FFFFFF; padding: 1rem 1.1rem; height: 100%;}
-.panel h4 {margin: 0 0 .6rem 0; font-size: .95rem; color: #134E4A; text-transform: uppercase; letter-spacing: .04em;}
-.fact {display: inline-block; background: #F0FDFA; border: 1px solid #99F6E4; color: #134E4A; border-radius: 8px;
-       padding: .2rem .55rem; margin: 0 .35rem .4rem 0; font-size: .85rem;}
-.fact b {color: #0F766E; font-weight: 600; margin-right: .25rem;}
+.muted {color: #64748B; font-size: .95rem;}
+.panel {border: 1px solid #E5E3DA; border-radius: 12px; background: #FFFFFF; padding: 1rem 1.1rem;}
+.panel h4 {margin: 0 0 .4rem 0; font-size: 1rem; color: #1C2A33;}
+.sect {font-size: 1rem; font-weight: 700; color: #1C2A33; margin: .9rem 0 .35rem 0;}
+.matched {color: #0F766E; font-size: .95rem; margin-top: .2rem;}
+.fact.intent {background: #E3F1EE;}
+.fact {display: inline-block; background: #EEF2F1; color: #1C2A33; border-radius: 6px;
+       padding: .12rem .5rem; margin: 0 .3rem .35rem 0; font-size: .95rem;}
+.fact b {color: #475569; font-weight: 600; margin-right: .25rem;}
 .unknown {display: inline-block; background: #FFFBEB; border: 1px dashed #F59E0B; color: #92400E; border-radius: 8px;
-          padding: .2rem .55rem; margin: 0 .35rem .4rem 0; font-size: .82rem;}
-.pipeline {display: flex; flex-wrap: wrap; gap: .5rem; align-items: stretch;}
-.step {flex: 1 1 140px; border-radius: 12px; padding: .6rem .7rem; border: 1px solid #E5E3DA; background: #FAFAF7;}
-.step .n {font-size: .7rem; font-weight: 700; color: #64748B;}
-.step .t {font-weight: 700; font-size: .92rem; margin: .1rem 0;}
-.step .d {font-size: .76rem; color: #475569; line-height: 1.25;}
-.step .tag {display: inline-block; margin-top: .35rem; font-size: .7rem; font-weight: 700; border-radius: 999px; padding: .05rem .5rem;}
-.s-proposed {border-color: #7C3AED; background: #F5F3FF;} .s-proposed .tag {background: #EDE9FE; color: #5B21B6;}
-.s-done {border-color: #0F766E; background: #F0FDFA;} .s-done .tag {background: #CCFBF1; color: #115E59;}
-.s-skip {opacity: .55;} .s-skip .tag {background: #E2E8F0; color: #475569;}
-.s-nodata {border-color: #D97706; background: #FFFBEB;} .s-nodata .tag {background: #FEF3C7; color: #92400E;}
+          padding: .2rem .55rem; margin: 0 .35rem .4rem 0; font-size: .95rem;}
+.vsteps {list-style: none; margin: 0; padding: 0;}
+.vsteps li {display: flex; gap: .7rem; align-items: flex-start; padding: .35rem 0; font-size: 1rem; margin: 0;}
+.vsteps li small {display: block; color: #64748B; font-size: .88rem; line-height: 1.3;}
+.vsteps .n {width: 1.45rem; height: 1.45rem; border-radius: 50%; background: #E3F1EE; color: #0F766E; font-weight: 700;
+            font-size: .8rem; display: inline-grid; place-items: center; flex: none; margin-top: .1rem;}
+.vsteps .done .n {background: #0F766E; color: #FFFFFF;}
+.vsteps .off {color: #A0AEC0;} .vsteps .off .n {background: #F1F3F2; color: #A0AEC0;}
+.vsteps .nodata .n {background: #FEF3C7; color: #92400E;}
+.chain {display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;}
+.chain .c {border: 1px solid #0F766E; color: #0F766E; background: #F0FAF8; border-radius: 8px; padding: .18rem .6rem;
+           font-weight: 600; font-size: .95rem; cursor: default;}
+.chain .c.skip {border-style: dashed; border-color: #CBD5E1; color: #94A3B8; background: transparent; font-weight: 400;}
+.chain .c.done {background: #0F766E; color: #FFFFFF;}
+.chain .c.nodata {border-color: #D97706; color: #92400E; background: #FFFBEB;}
+.chain .ar {color: #94A3B8;}
 .agents {display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: .5rem;}
 .agent {border: 1px solid #E5E3DA; border-radius: 12px; padding: .55rem .7rem; background: #FFFFFF;}
-.agent .t {font-weight: 700; font-size: .9rem;} .agent .d {font-size: .75rem; color: #475569;}
+.agent .t {font-weight: 700; font-size: 1rem;} .agent .d {font-size: .88rem; color: #475569;}
 .timeline {display: flex; gap: .4rem; flex-wrap: wrap;}
-.tl {flex: 1 1 120px; border-radius: 10px; padding: .45rem .6rem; background: #F1F5F9; color: #64748B; font-size: .78rem;}
-.tl .h {font-weight: 700; font-size: .8rem; margin-bottom: .15rem;}
+.tl {flex: 1 1 120px; border-radius: 10px; padding: .45rem .6rem; background: #F1F5F9; color: #64748B; font-size: .9rem;}
+.tl .h {font-weight: 700; font-size: .92rem; margin-bottom: .15rem;}
 .tl.on {color: #FFFFFF;}
-.tl.wait {background: #FFF7FB; color: #9D174D; border: 2px dashed #BE185D;}
+.tl.wait {background: #F0FAF8; color: #0F766E; border: 2px dashed #0F766E;}
+/* Answer card: one-line conclusion, the top towns, then the supporting numbers. */
+.answer {padding: .2rem .1rem 0;}
+.answer .lead {font-size: 1.75rem; font-weight: 700; line-height: 1.25; letter-spacing: -.015em; margin: 0 0 1.1rem 0;}
+.answer .lead em {font-style: normal; color: #0F766E;}
+.towns {display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .6rem;}
+.town {border: 1px solid #E3E1DA; border-radius: 12px; padding: .8rem 1rem; background: #FCFCFA;}
+.town .r {display: inline-grid; place-items: center; width: 1.4rem; height: 1.4rem; border-radius: 50%;
+          background: #E3F1EE; color: #0F766E; font-size: .85rem; font-weight: 700; margin-right: .45rem;}
+.town .n {font-weight: 700; font-size: 1.08rem;}
+.town .k {display: flex; gap: 1.4rem; margin-top: .45rem; font-size: .88rem; color: #475569; flex-wrap: wrap;}
+.town .k b {display: block; font-size: 1.3rem; line-height: 1.2; color: #1C2A33;}
+.kpis {display: flex; gap: 1.6rem; flex-wrap: wrap; margin-top: .8rem; padding-top: .6rem; border-top: 1px solid #E3E1DA;
+       font-size: .95rem; color: #334155;}
+.kpis b {color: #1C2A33; font-size: 1.08rem; margin-right: .2rem;}
+/* Grant screening as rows rather than cards. */
+.grants {border: 1px solid #E3E1DA; border-radius: 12px; background: #FFFFFF; padding: .2rem 1rem; margin-bottom: 1rem;}
+.grow {display: grid; grid-template-columns: 1.25fr 1fr 2.6fr .55fr; gap: .8rem; padding: .7rem 0;
+       border-bottom: 1px solid #EEECE6; font-size: 1rem; align-items: start;}
+.grow:last-child {border-bottom: none;}
+.grow.head {font-size: .95rem; font-weight: 700; color: #1C2A33; padding: .6rem 0 .3rem;}
+.grow .chk {display: block; font-size: .88rem; color: #0F766E; margin-top: .2rem;}
+.grow .chk.no {color: #B45309;} .grow .chk.na {color: #64748B;}
+.grow .needs {color: #92400E; margin-top: .2rem; cursor: help; text-decoration: underline dotted;}
+.grow .src a {display: block; white-space: nowrap; color: #0F766E; font-size: .92rem;}
+@media (max-width: 760px) {.grow {grid-template-columns: 1fr 1fr;} .grow.head {display: none;}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -265,7 +327,7 @@ def queue(payload):
 st.session_state.setdefault("guest_id", f"guest-{uuid.uuid4().hex[:8]}")
 defaults = {"thread": uuid.uuid4().hex[:12], "user": st.session_state.guest_id, "account": None, "use_memory": True,
             "result": None, "gate": None, "queued": None,
-            "trail": [], "last_brief": EXAMPLES["All-in-one: price, commute and grants"]}
+            "trail": [], "last_brief": EXAMPLES["All-in-one"]}
 for key, value in defaults.items():
     st.session_state.setdefault(key, value)
 # Streamlit drops a widget's state while it is hidden (during a gate), so restore the last brief.
@@ -286,8 +348,9 @@ def account_panel():
             st.rerun()
         return
     with st.form("sign-in", border=False):
-        name = st.text_input("Your name", placeholder="e.g. ken", help="No password in this prototype. "
-                             "Your name keys your conversations and memory on this machine.")
+        name = st.text_input("Your name", placeholder="e.g. ken", help="No password in this prototype. Your name keys your conversations and memory on "
+                             "this machine. As a guest, conversations last for this session only and nothing is "
+                             "remembered.")
         if st.form_submit_button("Sign in", use_container_width=True):
             user = re.sub(r"[^a-z0-9_-]", "-", name.strip().lower())[:32].strip("-")
             if not user or redact(name)[1]:
@@ -297,7 +360,6 @@ def account_panel():
                 # Each account has its own conversations; signing in never resumes a guest's pending decision.
                 fresh_start(profile_switched=True, user=user, account=name.strip()[:40])
                 st.rerun()
-    st.caption("Browsing as a guest: conversations last for this session and nothing is remembered.")
 
 
 def conversations_panel():
@@ -305,13 +367,12 @@ def conversations_panel():
     items = list_conversations(storage()[1], st.session_state.user)
     if not items:
         return
-    st.divider()
-    st.subheader("Your conversations")
+    st.markdown("<div class='sb-label'>Your conversations</div>", unsafe_allow_html=True)
     current = f"{st.session_state.user}/{st.session_state.thread}"
     for item in items[:8]:
         label = f"{item['title'][:42]}{'…' if len(item['title']) > 42 else ''} · {item['updated'][5:10]}"
         if item["thread"] == current:
-            st.caption(f"▶ {label}")
+            st.markdown(f"<div class='conv-cur'>{escape(label)}</div>", unsafe_allow_html=True)
         elif st.button(label, key=f"resume-{item['thread']}", use_container_width=True):
             st.session_state.resume_thread = item["thread"]
             st.rerun()
@@ -324,7 +385,6 @@ def memory_panel():
     store, user = storage()[1], st.session_state.user
     memory = list_memory(store, user)
     count = len(memory["searches"]) + bool(memory["preferences"]) + bool(memory["household"])
-    st.divider()
     with st.expander(f"My memory ({count})", expanded=False):
         if memory["preferences"]:
             prefs = ", ".join(f"{PROFILE_LABELS[k][0]}: {PROFILE_LABELS[k][1](v)}" for k, v in memory["preferences"].items()
@@ -366,51 +426,54 @@ def fresh_start(brief_reuse: bool = True, **extra):
     The previous brief is kept aside so the buyer can choose to reuse it.
     """
     previous = (st.session_state.get("brief") or st.session_state.get("last_brief") or "") if brief_reuse else ""
-    st.session_state.update(thread=uuid.uuid4().hex[:12], result=None, gate=None, trail=[], active_config=None,
+    st.session_state.update(thread=uuid.uuid4().hex[:12], result=None, gate=None, trail=[], active_config=None, result_panel=None,
+                            show_composer=False,
                             brief="", last_brief="", previous_brief=previous, **extra)
 
 
 with st.sidebar:
-    st.header("Session")
+    if st.button("New conversation", type="primary", use_container_width=True):
+        fresh_start()
+        st.rerun()
+    if st.session_state.pop("profile_switched", False):
+        st.info("Started a new conversation for this account.")
     has_key = bool(os.getenv("GOOGLE_API_KEY"))
-    engine = st.radio("Engine", ["Gemini agents (live)", "Offline (rule-based)"], index=0 if has_key else 1,
-                      help="Live mode uses Gemini for the six agents, OneMap for routes, and the data.gov.sg freshness check.")
+    engine = st.segmented_control("Engine", ["Gemini (live)", "Offline"], default="Gemini (live)" if has_key else "Offline",
+                                  required=True, width="stretch",
+                                  help="Live mode uses Gemini for the six agents, OneMap for routes, and the data.gov.sg "
+                                       "freshness check. Offline uses the rule-based agents.")
     live = engine.startswith("Gemini")
     if live and not has_key:
         st.error("Set GOOGLE_API_KEY in .env to use the live agents.")
         live = False
+    st.markdown("<div class='sb-label'>Options</div>", unsafe_allow_html=True)
     mcp = st.toggle("Route and export through MCP", value=False,
                     help="Calls the route and save tools through a FastMCP server and LangChain's MCPAdapter.")
     save = st.toggle("Save the approved shortlist", value=False,
                      help="Adds an output approval gate. The JSON export is written only after you approve.")
     st.session_state.save_flag = save
+    st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
     account_panel()
-    if st.button("New conversation", use_container_width=True):
-        fresh_start()
-        st.rerun()
-    st.caption(f"Thread `{st.session_state.thread}`")
-    if st.session_state.pop("profile_switched", False):
-        st.info("Started a new conversation for this account.")
     conversations_panel()
     memory_panel()
 
-    st.divider()
-    st.subheader("Data provenance")
+    st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
     source = provenance(DB) if DB.is_file() else None
-    if source:
-        retrieved = datetime.fromisoformat(source.retrieved_at).astimezone(ZoneInfo("Asia/Singapore")).date()
-        st.markdown(f"**{source.rows:,}** registered resale transactions  \nLatest month **{source.last_month}**  \n"
-                    f"Retrieved **{retrieved}** from [data.gov.sg]({source.url})")
-    else:
-        st.error("No transaction snapshot found. Run `python -m scripts.ingest_hdb`.")
-    st.markdown(f"Rules snapshot **{rules()['snapshot_date']}**, verified {rules().get('verified_on', 'n/a')}")
     trace_url = tracing()
-    st.divider()
-    st.subheader("Observability")
-    if trace_url:
-        st.markdown(f"Tracing to Arize Phoenix. [Open traces]({PHOENIX_URL}/projects)")
-    else:
-        st.caption("Phoenix tracing is off. Set PHOENIX_TRACING=true (on by default in Docker).")
+    if not source:
+        st.error("No transaction snapshot found. Run `python -m scripts.ingest_hdb`.")
+    # Provenance and tracing stay one click away instead of filling the sidebar.
+    with st.expander("Data and tracing"):
+        if source:
+            retrieved = datetime.fromisoformat(source.retrieved_at).astimezone(ZoneInfo("Asia/Singapore")).date()
+            st.markdown(f"**{source.rows:,}** resale transactions, latest month **{source.last_month}**, "
+                        f"retrieved {retrieved} from [data.gov.sg]({source.url})")
+        st.markdown(f"Grant rules snapshot **{rules()['snapshot_date']}**, verified {rules().get('verified_on', 'n/a')}")
+        if trace_url:
+            st.markdown(f"[Open traces in Arize Phoenix]({PHOENIX_URL}/projects)")
+        else:
+            st.markdown("Phoenix tracing is off. Set PHOENIX_TRACING=true (on by default in Docker).")
+        st.markdown(f"Thread `{st.session_state.thread}`")
 
 app = advisor(live, mcp)
 
@@ -424,18 +487,42 @@ if st.session_state.get("resume_thread"):
     st.session_state.gate = pending[0].value if pending else None
     st.rerun()  # Redraw so the sidebar marks the resumed conversation as current.
 
-st.markdown("""
-<div class="hero">
-  <h1>HDB Resale Research Advisor</h1>
-  <p>One assistant, six specialised agents. Describe your flat search in your own words. The assistant
-  analyses registered resale transactions, estimates public-transport commutes with OneMap, screens CPF
-  housing grants against dated official rules, and returns a cited shortlist of towns to look up on the
-  HDB Flat Portal.</p>
-  <div class="chips"><span class="chip">Historical transactions, not listings</span>
-  <span class="chip">Every figure comes from a tool</span><span class="chip">You approve each plan</span>
-  <span class="chip">HFE letter is the official assessment</span></div>
-</div>
-""", unsafe_allow_html=True)
+def stepper(current: int) -> str:
+    """Ask → Confirm plan → Results: where the buyer is in the human-in-the-loop flow."""
+    parts = []
+    for number, label in enumerate(["Ask", "Confirm plan", "Results"], 1):
+        state = "done" if number < current else "now" if number == current else ""
+        mark = "✓" if number < current else str(number)
+        if number > 1:
+            parts.append(f"<span class='bar{' on' if number <= current else ''}'></span>")
+        parts.append(f"<div class='s {state}'><span class='d'>{mark}</span>{label}</div>")
+    return "<div class='stepper'>" + "".join(parts) + "</div>"
+
+
+_gate, _result = st.session_state.gate, st.session_state.result or {}
+if _gate is not None:
+    step = 3 if _gate["type"] == "approve_output" else 2
+elif _result.get("canonical_report"):
+    step = 4  # Finished: every step is ticked.
+elif _result.get("cancelled"):
+    step = 2
+else:
+    step = 1
+def toggle_composer():
+    st.session_state.show_composer = not st.session_state.get("show_composer", False)
+
+
+finished = step == 4 or bool(_result.get("cancelled"))
+if finished:
+    brand_column, steps_column, new_column = st.columns([1.25, 1.65, .55], vertical_alignment="center")
+    new_column.button("New search", on_click=toggle_composer, use_container_width=True,
+                      type="primary" if st.session_state.get("show_composer") else "secondary")
+else:
+    brand_column, steps_column = st.columns([1.5, 1.35], vertical_alignment="center")
+brand_column.markdown("<div class='brand'><span class='logo'></span>HDB Resale Research Advisor</div>",
+                      unsafe_allow_html=True)
+steps_column.markdown(stepper(step), unsafe_allow_html=True)
+st.markdown("<div class='topline'></div>", unsafe_allow_html=True)
 
 # Run any decision queued by a button on the previous script pass, then redraw.
 if st.session_state.queued is not None:
@@ -467,35 +554,43 @@ def reuse_previous_brief():
 
 has_result = bool(st.session_state.result and (st.session_state.result.get("canonical_report")
                                                or st.session_state.result.get("cancelled")))
-if gate is None:
-    # Once there is an answer, a brand-new search steps back so the answer and its next step lead.
-    composer = st.expander("Start a new search", expanded=False) if has_result else st.container()
-    with composer:
-        st.markdown("### What would you like to research?")
-        st.caption("Ask in your own words. One request can combine a budget, a commute limit, grant questions and a "
-                   "loan estimate. The assistant splits the work across its agents and shows you the plan before any "
-                   "tool runs.")
-        brief = st.text_area("Research brief", key="brief", height=110, label_visibility="collapsed",
+def composer_card():
+    with st.container(border=True):
+        brief = st.text_area("Research brief", key="brief", height=120, label_visibility="collapsed",
                              placeholder="e.g. 4-room under S$600k within 45 minutes of Raffles Place MRT, and what do you need for grants?")
-        run_column, reuse_column, _ = st.columns([1, 1.2, 1.8])
+        examples_column, run_column = st.columns([4, 1.15], vertical_alignment="center")
+        with examples_column:
+            st.pills("Try an example", list(EXAMPLES), key="example", on_change=use_example,
+                     label_visibility="collapsed",
+                     help="Examples only fill the box above. You can edit the text before running it.")
+            if st.session_state.get("previous_brief") and not brief.strip():
+                st.button("Reuse previous brief", on_click=reuse_previous_brief)
         if run_column.button("Run research", type="primary", use_container_width=True):
             if brief.strip():
                 st.session_state.trail = []
                 st.session_state.last_brief = brief
+                st.session_state.show_composer = False
                 queue(prepare_turn(brief, save=save))
                 st.rerun()
             else:
                 st.warning("Enter a research brief first.")
-        if st.session_state.get("previous_brief") and not brief.strip():
-            reuse_column.button("Reuse previous brief", on_click=reuse_previous_brief, use_container_width=True)
-        st.pills("Try an example", list(EXAMPLES), key="example", on_change=use_example,
-                 help="Examples only fill the box above. You can edit the text before running it.")
+
+
+if gate is None and not has_result:
+    _, middle, _ = st.columns([.45, 4, .45])
+    with middle:
+        st.markdown("<div class='hero'><h1>Describe the flat you want</h1><p>Past resale prices, commute times and "
+                    "grant checks from one request. You approve the plan before anything runs.</p></div>",
+                    unsafe_allow_html=True)
+        composer_card()
+elif gate is None and st.session_state.get("show_composer"):
+    composer_card()
 
 
 # ---------------------------------------------------------------------------------------------------
 # How the assistant is handling the request: interpreted profile, plan, agents and workflow timeline.
 # ---------------------------------------------------------------------------------------------------
-def interpreted_request(values) -> str:
+def interpreted_request(values, *, destination=True) -> str:
     profile = values.get("profile") or {}
     facts = []
     for key, (label, fmt) in PROFILE_LABELS.items():
@@ -504,10 +599,12 @@ def interpreted_request(values) -> str:
             continue
         facts.append(f"<span class='fact'><b>{escape(label)}</b>{escape(str(fmt(value)))}</span>")
     intent = (values.get("intent") or "unknown").replace("_", " ")
-    html = (f"<div class='muted'>Intent <b>{escape(intent)}</b> · router confidence "
-            f"{values.get('confidence', 0):.2f}</div><div style='margin-top:.5rem'>"
-            + ("".join(facts) or "<span class='muted'>No search filters were found in the brief.</span>") + "</div>")
-    html += destination_note(values)
+    intent_chip = (f"<span class='fact intent' title='Router confidence {values.get('confidence', 0):.2f}'>"
+                   f"<b>Intent</b>{escape(intent)} · {values.get('confidence', 0):.2f}</span>")
+    html = ("<div>" + intent_chip + ("".join(facts) or "<span class='fact'>No search filters found in the brief</span>")
+            + "</div>")
+    if destination:
+        html += destination_note(values)
     from_memory = values.get("from_memory") or []
     if from_memory:
         names = ", ".join(PROFILE_LABELS[k][0].lower() for k in from_memory if k in PROFILE_LABELS)
@@ -516,11 +613,6 @@ def interpreted_request(values) -> str:
         recalled = "".join(f"<li>{escape(m['text'])}</li>" for m in values["memories"])
         html += (f"<div class='muted' style='margin-top:.4rem'>Using what I remember from earlier conversations:"
                  f"<ul style='margin:.2rem 0 0 1rem'>{recalled}</ul></div>")
-    if "grants" in (values.get("plan") or []):
-        missing = [key for key in GRANT_PROFILE_FIELDS if profile.get(key) in (None, [])]
-        if missing:
-            html += ("<div class='muted' style='margin-top:.4rem'>Still needed to screen grants</div>"
-                     + "".join(f"<span class='unknown'>{escape(PROFILE_LABELS.get(k, (k,))[0])}</span>" for k in missing))
     return html
 
 
@@ -530,12 +622,11 @@ def destination_note(values) -> str:
     if not found.get("query"):
         return ""
     if found.get("anchor_id"):
-        where = f" · {escape(place_label(found['address']))}" if found.get("address") else ""
-        return (f"<div class='muted' style='margin-top:.4rem'>Commute destination matched on OneMap: "
-                f"<b>{escape(found['label'])}</b>{where}</div>")
+        where = escape(place_label(found["address"])) if found.get("address") else ""
+        return f"<div class='matched' title='Matched on OneMap: {where}'>✓ {escape(found['label'])}</div>"
     why = "not in the offline cache" if found.get("status") == "offline_unknown" else "not found on OneMap"
     return (f"<div class='unknown' style='margin-top:.4rem'>Destination \"{escape(found['query'])}\" {why}. "
-            "Edit it below, for example with a postal code or MRT station.</div>")
+            "Edit the destination, for example with a postal code or MRT station.</div>")
 
 
 def destination_label(values) -> str:
@@ -543,27 +634,34 @@ def destination_label(values) -> str:
     return found.get("label") or (values.get("profile") or {}).get("destination") or "your destination"
 
 
+# Short "who does it" lines for the plan list; the full descriptions stay in PLAN_STEPS (shown on hover).
+PLAN_SHORT = {"market": "SQLite resale transactions", "route": "OneMap transit", "grants": "Policy agent + rule engine",
+              "afford": "HDB loan calculator", "report": "Writer, checked by the Critic"}
+
+
 def plan_pipeline(values, gate) -> str:
+    """The research plan as a numbered list; steps that are not needed stay visible but faded."""
     plan = values.get("plan") or []
     used = set(values.get("tool_steps") or [])
     finished = gate is None and bool(values.get("canonical_report"))
-    cards = []
-    for index, (key, (title, detail)) in enumerate(PLAN_STEPS.items(), 1):
+    items, number = [], 0
+    for key, (title, detail) in PLAN_STEPS.items():
         if key not in plan:
-            state, tag = "skip", "Not needed"
+            state, tag = "off", "Not needed"
         elif values.get("cancelled"):
-            state, tag = "skip", "Cancelled"
+            state, tag = "off", "Cancelled"
         elif not finished:
-            state, tag = "proposed", "Awaiting your approval" if gate and gate["type"] == "confirm_plan" else "Planned"
+            state, tag = "", PLAN_SHORT[key]
         elif key == "report" or key in used:
-            state, tag = "done", "Done"
+            state, tag = "done", PLAN_SHORT[key]
         else:
             state, tag = "nodata", "No data returned"
-        cards.append(f"<div class='step s-{state}'><div class='n'>STEP {index}</div><div class='t'>{title}</div>"
-                     f"<div class='d'>{detail}</div><span class='tag'>{tag}</span></div>")
-    rationale = values.get("rationale")
-    note = f"<div class='muted' style='margin-top:.5rem'>Planner: {escape(rationale)}</div>" if rationale else ""
-    return "<div class='pipeline'>" + "".join(cards) + "</div>" + note
+        if state != "off":
+            number += 1
+        mark = "✓" if state == "done" else "–" if state == "off" else str(number)
+        items.append(f"<li class='{state}' title='{escape(detail)}'><span class='n'>{mark}</span>"
+                     f"<div>{title}<small>{escape(tag)}</small></div></li>")
+    return "<ol class='vsteps'>" + "".join(items) + "</ol>"
 
 
 def agent_roster(values) -> str:
@@ -602,19 +700,24 @@ def timeline(gate=None) -> str:
     return "<div class='timeline'>" + "".join(blocks) + "</div>"
 
 
-def handling_panel(values, gate, *, title="How the assistant is handling your request"):
-    st.markdown(f"### {title}")
-    left, right = st.columns([1, 1.35])
-    left.markdown(f"<div class='panel'><h4>Interpreted request</h4>{interpreted_request(values)}</div>",
-                  unsafe_allow_html=True)
-    right.markdown(f"<div class='panel'><h4>Research plan</h4>{plan_pipeline(values, gate)}</div>",
-                   unsafe_allow_html=True)
-    st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
+def handling_summary(values, gate, *, destination=True) -> str:
+    return (f"<div class='sect'>Understood</div>{interpreted_request(values, destination=destination)}"
+            f"<div class='sect'>Plan</div>{plan_pipeline(values, gate)}")
+
+
+def workflow_details(values, gate):
     # Technical detail stays one click away; the buyer's decision comes first.
     with st.expander("Agents and workflow progress", expanded=False):
         st.markdown(agent_roster(values), unsafe_allow_html=True)
         st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
         st.markdown(timeline(gate), unsafe_allow_html=True)
+
+
+def handling_panel(values, gate, *, title="How the assistant is handling your request"):
+    with st.container(border=True):
+        st.markdown(f"<div style='font-weight:700'>{escape(title)}</div>" + handling_summary(values, gate),
+                    unsafe_allow_html=True)
+    workflow_details(values, gate)
 
 
 def describe(key, value) -> str:
@@ -643,11 +746,14 @@ def refinement_sentence(values) -> str | None:
     return ("; ".join(parts) + ".") if parts else "Re-running your previous search."
 
 
-def applied_filters(values) -> str:
+def applied_filters(values, *, plain=False) -> str:
     if not values.get("market"):
         return ""  # Search filters only describe a market search; a loan or grant answer has none.
     profile = values.get("profile") or {}
     keys = ["flat_type", "max_price", "months_back", "min_est_lease_years", "towns", "destination", "max_commute_min"]
+    if plain:
+        return " · ".join(escape(f"{PROFILE_LABELS[k][0]} {PROFILE_LABELS[k][1](profile[k])}")
+                          for k in keys if profile.get(k) not in (None, []))
     chips = [f"<span class='fact'><b>{escape(PROFILE_LABELS[k][0])}</b>{escape(str(PROFILE_LABELS[k][1](profile[k])))}</span>"
              for k in keys if profile.get(k) not in (None, [])]
     return "".join(chips)
@@ -656,6 +762,7 @@ def applied_filters(values) -> str:
 def start_refinement(brief: str, updates: dict | None = None, *, preapproved: bool = False):
     """Continue this conversation, carrying the approved filters and household facts forward."""
     st.session_state.trail = []
+    st.session_state.result_panel = None  # Close the follow-up form under the answer.
     queue(prepare_turn(brief, save=st.session_state.get("save_flag", False), refine=True, updates=updates or {},
                        preapproved=preapproved))
     st.rerun()
@@ -743,13 +850,13 @@ FACT_SPECS = {
 YES_NO = [None, True, False]
 
 
-def fact_inputs(keys, values, prefix) -> dict:
-    """Render inputs for household, flat and loan facts, three per row. Unknown stays None."""
+def fact_inputs(keys, values, prefix, per_row=3) -> dict:
+    """Render inputs for household, flat and loan facts, a few per row. Unknown stays None."""
     chosen = {}
-    columns = st.columns(3)
+    columns = st.columns(per_row)
     for index, key in enumerate(keys):
         label, kind, *extra = FACT_SPECS[key]
-        column = columns[index % 3]
+        column = columns[index % per_row]
         current = values.get(key)
         widget = f"{prefix}-{key}"
         if kind == "choice":
@@ -770,42 +877,52 @@ def fact_inputs(keys, values, prefix) -> dict:
 
 
 def plan_gate(gate):
-    steps = " → ".join(PLAN_STEPS[step][0] for step in gate["plan"] if step in PLAN_STEPS)
     searching, screening = "market" in gate["plan"], "grants" in gate["plan"]
-    title, action = (("Check your filters and household facts, then run", "Run search and check grants")
-                     if searching and screening else
-                     ("Check your household facts", "Check grants") if screening else
-                     ("Check your filters, then run", "Run with these filters"))
-    sentence = refinement_sentence(st.session_state.result or {})
-    follow = f"<div style='margin:.3rem 0 .5rem'>{escape(sentence)}</div>" if sentence else ""
-    st.markdown(f'<div class="gate"><h3>{title}</h3>{follow}<b>{steps}</b><br>'
-                f'<span class="muted">Adjust anything below. The run uses exactly the values shown.</span></div>',
-                unsafe_allow_html=True)
+    action = ("Run search and check grants" if searching and screening else
+              "Check grants" if screening else "Run with these filters")
+    values = st.session_state.result or {}
+    sentence = refinement_sentence(values)
     current = gate["filters"]
     household = gate.get("household") or {}
-    with st.form("plan"):
-        wanted = {}
-        if searching:
-            wanted = search_filter_inputs(current)
-        if screening:
-            st.markdown("**Household and flat facts used for the grant screening**")
-            facts = ["citizenship", "first_timer", "near_parents", "household_income_monthly", "buyer_ages",
-                     "flat_remaining_lease", "continuous_employment_12m", "prerequisites_confirmed", "prior_phg"]
-            if not searching:
-                facts.insert(5, "flat_type")
-            wanted |= fact_inputs(facts, {**household, **current}, "plan")
-        remember = keep_household = False
-        if memory_enabled():
-            remember = (st.checkbox("Remember my towns, floor and commute destination for future conversations")
-                        if searching else False)
-            keep_household = (st.checkbox("Remember these household facts for future conversations",
-                                          help="Stored only for your account. You can view or delete them under My memory.")
-                              if screening else False)
-        elif st.session_state.get("account"):
-            st.caption("Memory is off: nothing from this plan will be remembered.")
-        run, cancel, _ = st.columns([1.4, 1, 1.6])
-        submitted = run.form_submit_button(action, type="primary", use_container_width=True)
-        cancelled = cancel.form_submit_button("Cancel", use_container_width=True)
+    # Left: what was understood and the plan. Right: the values the run will use, then run.
+    left, right = st.columns([1, 1.85], gap="medium")
+    with left.container(border=True):
+        st.markdown("<div class='card-title'>Your request</div>"
+                    + (handling_summary(values, gate, destination=not searching) if values else ""),
+                    unsafe_allow_html=True)
+    with right.container(border=True):
+        follow = f"<div style='margin:-.2rem 0 .6rem'>{escape(sentence)}</div>" if sentence else ""
+        st.markdown(f"<div class='card-title'>Confirm the plan</div>{follow}", unsafe_allow_html=True)
+        with st.form("plan", border=False):
+            wanted = {}
+            if searching:
+                wanted = search_filter_inputs(current)
+            if screening:
+                facts = ["citizenship", "first_timer", "near_parents", "household_income_monthly", "buyer_ages",
+                         "flat_remaining_lease", "continuous_employment_12m", "prerequisites_confirmed", "prior_phg"]
+                if not searching:
+                    facts.insert(5, "flat_type")
+                shown_facts = {**household, **current}
+                given = sum(shown_facts.get(key) not in (None, []) for key in facts)
+                # Collapsed by default to keep the plan short; the fields and what they submit are unchanged.
+                with st.expander(f"Household details for grant screening · {given} of {len(facts)} given",
+                                 expanded=not searching):
+                    wanted |= fact_inputs(facts, shown_facts, "plan", per_row=2)
+            remember = keep_household = False
+            if memory_enabled():
+                remember = (st.checkbox("Remember my towns, floor and commute destination for future conversations")
+                            if searching else False)
+                keep_household = (st.checkbox("Remember these household facts for future conversations",
+                                              help="Stored only for your account. You can view or delete them under My memory.")
+                                  if screening else False)
+            elif st.session_state.get("account"):
+                st.caption("Memory is off: nothing from this plan will be remembered.")
+            # Confirm-dialog order: Cancel, then the primary action at the far right.
+            _, cancel, run = st.columns([1.1, .8, 1.7])
+            cancelled = cancel.form_submit_button("Cancel", use_container_width=True)
+            submitted = run.form_submit_button(action, type="primary", use_container_width=True)
+    if values:
+        workflow_details(values, gate)
     if cancelled:
         queue(Command(resume={"action": "cancel"}))
         st.rerun()
@@ -829,24 +946,25 @@ def plan_gate(gate):
 
 def search_filter_inputs(current) -> dict:
     """The market search filters, prefilled with the agent's reading of the brief."""
-    a, b, c = st.columns(3)
+    a, b = st.columns(2)
     flat = a.selectbox("Flat type", ["Any", *FLAT_TYPES],
                        index=(FLAT_TYPES.index(current["flat_type"]) + 1) if current.get("flat_type") else 0)
-    price = b.number_input("Maximum price (S$, 0 = none)", min_value=0, step=10_000,
-                           value=int(current.get("max_price") or 0))
-    months = c.slider("Look back at sales from the last … months", 1, LOOKBACK_MAX,
+    price = b.number_input("Max price (S$)", min_value=0, step=10_000, value=int(current.get("max_price") or 0),
+                           help="0 = no limit.")
+    c, d = st.columns(2)
+    destination = c.text_input("Commute to", value=current.get("destination") or "",
+                               help="Address, postal code, building or MRT station. Blank = no commute.")
+    c.markdown(destination_note(st.session_state.result or {}), unsafe_allow_html=True)
+    commute = d.number_input("Commute limit (min)", 0, 300, int(current.get("max_commute_min") or 0),
+                             help="0 = no limit.")
+    e, f = st.columns(2)
+    months = e.slider("Sales from the last … months", 1, LOOKBACK_MAX,
                       min(LOOKBACK_MAX, int(current.get("months_back", 12))),
                       help=LOOKBACK_HELP)
-    d, e, f = st.columns(3)
-    lease = d.number_input("Minimum estimated lease (years, 0 = none)", 0, 99,
-                           int(current.get("min_est_lease_years") or 0))
-    commute = e.number_input("Commute limit (minutes, 0 = none)", 0, 300,
-                             int(current.get("max_commute_min") or 0))
-    towns = f.multiselect("Towns (none = all towns)", TOWNS, default=[t for t in current.get("towns", []) if t in TOWNS],
-                          format_func=str.title)
-    destination = st.text_input("Commute destination (address, postal code, building or MRT station; blank = none)",
-                                value=current.get("destination") or "")
-    st.markdown(destination_note(st.session_state.result or {}), unsafe_allow_html=True)
+    lease = f.number_input("Min estimated lease (years)", 0, 99, int(current.get("min_est_lease_years") or 0),
+                           help="0 = no minimum.")
+    towns = st.multiselect("Towns", TOWNS, default=[t for t in current.get("towns", []) if t in TOWNS],
+                           format_func=str.title, placeholder="All towns", help="Leave empty to search every town.")
     return {"flat_type": None if flat == "Any" else flat, "max_price": float(price) or None, "months_back": months,
             "min_est_lease_years": lease or None, "max_commute_min": commute or None, "towns": towns,
             "destination": destination.strip() or None}
@@ -882,7 +1000,7 @@ values = st.session_state.result
 if gate is not None:
     {"refresh_data": refresh_gate, "clarify": clarify_gate, "confirm_plan": plan_gate,
      "approve_output": output_gate}[gate["type"]](gate)
-    if values:
+    if values and gate["type"] != "confirm_plan":
         handling_panel(values, gate)
 
 
@@ -927,6 +1045,13 @@ def zero_result_actions(values, key, *, summary=True):
         start_refinement("Widen the date range.", {"months_back": min(LOOKBACK_MAX, months * 2)})
 
 
+def readable(chart):
+    """Axis and legend text at a size people can read on screen and in a recording."""
+    return (chart.configure_axis(labelFontSize=14, titleFontSize=15, titleFontWeight="normal")
+            .configure_axisY(labelOverlap=False, labelLimit=220)  # Keep every town name, never thin them out.
+            .configure_legend(labelFontSize=14, symbolSize=120))
+
+
 def market_tab(values):
     market = values.get("market") or {}
     if not market:
@@ -948,11 +1073,12 @@ def market_tab(values):
         x="Median:Q", color=colour,
         tooltip=["Town", "Transactions", alt.Tooltip("Median:Q", format="$,.0f"),
                  alt.Tooltip("Commute (min):Q", format=".1f"), "Example block"])
-    st.markdown("**Towns in shortlist order** (commute first when OneMap data exists, then median price)")
-    st.altair_chart((band + median).properties(height=max(220, 30 * len(shown))), use_container_width=True)
+    st.markdown("**Price range by town**", help="Middle half and median of transacted prices, in shortlist order: "
+                "commute first when OneMap data exists, then median price.")
+    st.altair_chart(readable((band + median).properties(height=max(260, 34 * len(shown)))), use_container_width=True)
     timed = frame.dropna(subset=["Commute (min)"])
     if not timed.empty:
-        st.markdown("**Price against commute**")
+        st.markdown("**Price against commute**", help="Bubble size is the number of transactions.")
         scatter = alt.Chart(timed).mark_circle(opacity=.85).encode(
             x=alt.X("Commute (min):Q", title=f"Weekday 08:00 transit to {destination_label(values)} (min)"),
             y=alt.Y("Median:Q", title="Median price (S$)", axis=alt.Axis(format="$,.0f"), scale=alt.Scale(zero=False)),
@@ -963,10 +1089,11 @@ def market_tab(values):
         limit = (values.get("profile") or {}).get("max_commute_min")
         if limit:
             layers = scatter + alt.Chart(pd.DataFrame({"x": [limit]})).mark_rule(strokeDash=[5, 4], color="#BE185D").encode(x="x:Q")
-        st.altair_chart(layers.properties(height=320), use_container_width=True)
+        st.altair_chart(readable(layers.properties(height=360)), use_container_width=True)
     table = frame.assign(**{col: frame[col].map(money) for col in ("Median", "P25", "P75")},
                          **{"Commute (min)": frame["Commute (min)"].round(1)})
-    st.dataframe(table, hide_index=True, use_container_width=True)
+    st.markdown("**All matching towns**")
+    st.dataframe(table, hide_index=True, use_container_width=True, height=min(38 + 35 * len(table), 390))
 
 
 GRANT_BADGES = {"may_apply": ("b-ok", "May apply"), "need_more_info": ("b-warn", "Need more info"),
@@ -976,24 +1103,35 @@ AGENT_BADGES = {"agreed": ("b-ok", "Policy agent agreed with rule check"),
                 "not_assessed": ("b-info", "Rule check only")}
 
 
-def grant_card(grant) -> str:
+AGENT_MARKS = {"agreed": ("", "✓ Agent agrees"), "disagreed": ("no", "Agent disagreed"), "not_assessed": ("na", "")}
+
+
+def grant_row(grant) -> str:
     css, text = GRANT_BADGES[grant["status"]]
-    acss, atext = AGENT_BADGES[grant.get("agent_check", "not_assessed")]
-    amount = f" · indicative <b>{grant['amount_text']}</b>" if grant["amount_text"] else ""
-    missing = (f"<div class='muted'>Still needed: {describe_missing(grant['missing_fields'])}</div>"
-               if grant["missing_fields"] else "")
-    explanation = f"<div>{escape(grant['explanation'])}</div>" if grant.get("explanation") else ""
-    sources = " ".join(f"<a href='{url}'>Source {i}</a>" for i, url in enumerate(grant["citations"], 1))
-    return (f"<div class='card'><b>{grant['name']}</b> <span class='badge {css}'>{text}</span>{amount}"
-            f" <span class='badge {acss}'>{atext}</span><div class='muted'>{escape(grant['note'])}</div>"
-            f"{explanation}{missing}<div class='muted'>{sources}</div></div>")
+    check = grant.get("agent_check", "not_assessed")
+    mark_css, mark = AGENT_MARKS[check]
+    amount = f"<div class='muted'>indicative <b>{escape(grant['amount_text'])}</b></div>" if grant["amount_text"] else ""
+    why = escape(grant.get("explanation") or grant["note"])
+    # The rule engine's note is shown too when it adds something beyond the agent's explanation.
+    note = (f"<div class='muted'>{escape(grant['note'])}</div>"
+            if grant.get("explanation") and grant["note"] and not grant["missing_fields"] else "")
+    # A count in the row; the full list of missing details shows on hover.
+    count = len(grant["missing_fields"])
+    missing = (f"<div class='needs' title='Still needed: {escape(describe_missing(grant['missing_fields']))}'>"
+               f"{count} detail{'s' if count != 1 else ''} missing</div>" if count else "")
+    sources = "".join(f"<a href='{url}' title='{escape(url)}'>Source {i}</a>" for i, url in enumerate(grant["citations"], 1))
+    return (f"<div class='grow'><div><b>{escape(grant['name'])}</b>{amount}</div>"
+            f"<div><span class='badge {css}'>{text}</span><span class='chk {mark_css}' "
+            f"title='{escape(AGENT_BADGES[check][1])}'>{mark}</span></div>"
+            f"<div>{why}{note}{missing}</div><div class='src'>{sources}</div></div>")
 
 
 def grants_tab(values):
     grants = values.get("grants") or []
     if grants:
-        st.markdown("**Screening in this report**")
-        st.markdown("".join(grant_card(g) for g in grants), unsafe_allow_html=True)
+        head = "<div class='grow head'><div>Grant</div><div>Result</div><div>Why</div><div>Sources</div></div>"
+        st.markdown("<div class='grants'>" + head + "".join(grant_row(g) for g in grants) + "</div>",
+                    unsafe_allow_html=True)
     calculator(values)
 
 
@@ -1006,13 +1144,11 @@ def calculator(values):
     profile = values.get("profile") or {}
     towns = [t for t, _ in ranked_towns(values)]
     example_price = towns[0]["median"] if towns else None
-    st.markdown("### Grant and loan calculator")
-    st.caption("Enter your household and the flat you are considering. The calculation uses the same dated HDB "
-               "rules as the agents and shows each step. Illustrative only: HDB's HFE letter is the official assessment.")
     # A calculation belongs to the report it was made from; a new report starts from that report's inputs.
     report_id = hashlib.sha1((values.get("canonical_report") or "").encode()).hexdigest()[:10]
     key = f"calc-{st.session_state.thread}-{report_id}"
-    with st.form("calculator"):
+    calculator_box = st.expander("Calculate with your own numbers", expanded=False)
+    with calculator_box.form("calculator", border=False):
         st.markdown("**Household**")
         a, b, c = st.columns(3)
         citizenship_options = ["Unknown", *CITIZENSHIP]
@@ -1066,10 +1202,6 @@ def calculator(values):
         except ValueError:
             st.error("Check the ages (18 to 120) and the other values.")
     calc = st.session_state.get(key)
-    if calc is not None:
-        st.caption(f"Calculated for: price {money(calc.purchase_price or 0)}, income "
-                   f"{money(calc.household_income_monthly or 0)}/month, ages {', '.join(map(str, calc.buyer_ages)) or 'n/a'}, "
-                   f"remaining lease {calc.flat_remaining_lease or 0:g} years. Press Calculate after changing a value.")
     if calc is None and values.get("affordability"):
         # Show the agents' own inputs straight away; the buyer can then change them and recalculate.
         calc = BuyerProfile.model_validate(profile)
@@ -1113,10 +1245,11 @@ def calculator(values):
         a.metric("Purchase price", money(calc.purchase_price))
         b.metric("Grants applied", f"− {money(grants_applied)}")
         c.metric("HDB loan applied", f"− {money(loan_applied)}", f"ceiling {money(loan.loan_ceiling)}", delta_color="off")
-        d.metric("From CPF savings and/or cash", money(balance))
-        st.caption(f"{money(grants_applied)} + {money(loan_applied)} + {money(balance)} = {money(calc.purchase_price)}. "
-                   "The loan applied is the smaller of the borrowing ceiling and the price left after grants. Grants are "
-                   "credited to CPF and offset the price. Valuation differences, CPF usage limits and fees are not included.")
+        d.metric("From CPF savings and/or cash", money(balance),
+                 help=f"{money(grants_applied)} + {money(loan_applied)} + {money(balance)} = {money(calc.purchase_price)}. "
+                      "The loan applied is the smaller of the borrowing ceiling and the price left after grants. Grants are "
+                      "credited to CPF and offset the price. Valuation differences, CPF usage limits and fees are not "
+                      "included. Illustrative only: HDB's HFE letter is the official assessment.")
     keep = (st.checkbox("Remember my household details for future conversations", key=f"keep-{key}",
                         help="Stored only for your account; view or delete under My memory.")
             if memory_enabled() else False)
@@ -1131,6 +1264,7 @@ def calculator(values):
 
 
 def trace_tab(values):
+    handling_panel(values, None, title="How the assistant handled this request")
     a, b, c, d = st.columns(4)
     a.metric("Intent", (values.get("intent") or "n/a").replace("_", " "),
              f"confidence {values.get('confidence', 0):.2f}", delta_color="off")
@@ -1203,22 +1337,22 @@ def finance_headline(values) -> str:
 def follow_up(values):
     """Change this search: carry the approved filters forward and change only what the buyer asks."""
     profile = values.get("profile") or {}
-    with st.expander("Change this search", expanded=False):
-        with st.form("refine"):
-            st.markdown("<span class='muted'>Your filters and household details carry forward. Blank or 0 removes "
-                        "a filter.</span>", unsafe_allow_html=True)
+    with st.container(border=True):
+        with st.form("refine", border=False):
             text = st.text_input("Follow-up", placeholder="e.g. What about Woodlands instead?",
                                  label_visibility="collapsed")
             a, b, c = st.columns(3)
-            price = a.number_input("Budget (S$, 0 = none)", min_value=0, step=10_000,
-                                   value=int(profile.get("max_price") or 0))
+            price = a.number_input("Budget (S$)", min_value=0, step=10_000,
+                                   value=int(profile.get("max_price") or 0), help="0 = no limit.")
             months = b.number_input("Look back at sales (months)", 1, LOOKBACK_MAX,
                                     min(LOOKBACK_MAX, int(profile.get("months_back") or 12)), help=LOOKBACK_HELP)
-            towns = c.multiselect("Towns (none = all towns)", TOWNS, default=profile.get("towns") or [],
-                                  format_func=str.title)
+            towns = c.multiselect("Towns", TOWNS, default=profile.get("towns") or [],
+                                  format_func=str.title, placeholder="All towns")
             d, e = st.columns([2, 1])
-            destination = d.text_input("Commute destination (blank = no commute)", value=profile.get("destination") or "")
-            commute = e.number_input("Commute limit (min, 0 = none)", 0, 300, int(profile.get("max_commute_min") or 0))
+            destination = d.text_input("Commute to", value=profile.get("destination") or "",
+                                       help="Blank = no commute.")
+            commute = e.number_input("Commute limit (min)", 0, 300, int(profile.get("max_commute_min") or 0),
+                                     help="0 = no limit.")
             submitted = st.form_submit_button("Update search", type="primary")
         if profile.get("destination") or profile.get("max_commute_min"):
             if st.button("Clear commute", help="Removes the commute destination and limit, then asks you to confirm."):
@@ -1233,8 +1367,8 @@ def follow_up(values):
         start_refinement(text.strip() or "Refine the previous search.", updates)
 
 
-def next_step(values):
-    """One action that fits the answer, placed directly under it."""
+def next_step_spec(values):
+    """The one action that fits the answer: its label, the fields it asks for, its brief and approval."""
     profile = values.get("profile") or {}
     loan = values.get("affordability") or {}
     grants = values.get("grants") or []
@@ -1251,9 +1385,16 @@ def next_step(values):
     elif len(towns) > 1:
         label, keys, brief, preapproved = "Compare towns", None, "Compare these towns.", False
     else:
-        return
-    with st.expander(label, expanded=False):
-        with st.form("next-step"):
+        return None
+    return label, keys, brief, preapproved, towns
+
+
+def next_step(values, spec):
+    """The form for that action, shown under the answer when its button is pressed."""
+    profile = values.get("profile") or {}
+    label, keys, brief, preapproved, towns = spec
+    with st.container(border=True):
+        with st.form("next-step", border=False):
             if keys:
                 chosen = fact_inputs(keys, profile, "next")
             else:
@@ -1275,28 +1416,56 @@ def next_step(values):
             start_refinement(brief, updates, preapproved=preapproved)
 
 
+def answer_card(values) -> tuple[str, str]:
+    """Lead with the conclusion and the top towns; the summary line goes in the card's footer. Same figures as before."""
+    profile = values.get("profile") or {}
+    ranked = ranked_towns(values)
+    limit = profile.get("max_commute_min")
+    lead, top = escape(headline(values)), ranked[:3]
+    if values.get("routes") and limit is not None and ranked:
+        fits, above, _ = commute_split(ranked, limit)
+        checked = len(fits) + len(above)
+        if checked:
+            lead = (f"<em>{len(fits)} of {checked}</em> verified {'route' if checked == 1 else 'routes'} reach "
+                    f"{escape(destination_label(values))} within {limit} minutes")
+            top = fits[:3] or ranked[:3]
+    cards = []
+    for town, route in top:
+        rank = next(i for i, (t, _) in enumerate(ranked, 1) if t is town)
+        minutes = route.get("duration_min") if route else None
+        commute = f"<span><b>{minutes:.1f} min</b>commute</span>" if minutes is not None else ""
+        block = f"Sample block {town['sample_blocks'][0].title()} · " if town["sample_blocks"] else ""
+        detail = f"{block}{town['n_tx']:,} sale{'s' if town['n_tx'] != 1 else ''}"
+        cards.append(f"<div class='town' title='{escape(detail)}'><div class='n'><span class='r'>{rank}</span>"
+                     f"{escape(town['town'].title())}</div>"
+                     f"<div class='k'>{commute}<span><b>{money(town['median'])}</b>median</span></div></div>")
+    parts = []
+    frame = town_frame(values)
+    if not frame.empty:
+        parts.append(f"<b>{len(frame)}</b> towns · <b>{int(frame['Transactions'].sum()):,}</b> transactions")
+    finance = finance_headline(values)
+    if finance and finance not in headline(values):
+        parts.append(escape(finance))
+    body = (f"<div class='answer'><div class='lead'>{lead}</div>"
+            + (f"<div class='towns'>{''.join(cards)}</div>" if cards else "") + "</div>")
+    return body, "<div class='summary'>" + " · ".join(parts) + "</div>" if parts else ""
+
+
 def result_metrics(values):
     """Metrics that belong to this answer: market, loan or grants. Model usage lives in Agent trace."""
     loan = values.get("affordability") or {}
     grants = values.get("grants") or []
     frame = town_frame(values)
-    if not frame.empty:
-        timed = frame.dropna(subset=["Commute (min)"])
-        a, b, c = st.columns(3)
-        a.metric("Towns matched", len(frame))
-        b.metric("Transactions", f"{int(frame['Transactions'].sum()):,}")
-        if values.get("routes"):
-            c.metric("Best verified commute", f"{timed['Commute (min)'].min():.1f} min" if not timed.empty else "n/a")
     if loan.get("status") == "illustrative":
         p = values.get("profile") or {}
         a, b, c = st.columns(3)
-        a.metric("HDB loan ceiling", money(loan["loan_ceiling"]))
+        inputs = (f"Inputs used: price {money(p.get('purchase_price') or 0)}, valuation {money(p.get('valuation') or 0)}, "
+                  f"income {money(p.get('household_income_monthly') or 0)}/month, ages "
+                  f"{', '.join(map(str, p.get('buyer_ages') or []))}, existing debt {money(p.get('existing_monthly_debt') or 0)}"
+                  f"/month, remaining lease {p.get('flat_remaining_lease') or 0:g} years.")
+        a.metric("HDB loan ceiling", money(loan["loan_ceiling"]), help=inputs)
         b.metric("Monthly instalment", f"S${loan['monthly_instalment']:,.2f}")
         c.metric("Repayment period", f"{loan['tenure_years']} years")
-        st.caption(f"Inputs used: price {money(p.get('purchase_price') or 0)}, valuation {money(p.get('valuation') or 0)}, "
-                   f"income {money(p.get('household_income_monthly') or 0)}/month, ages "
-                   f"{', '.join(map(str, p.get('buyer_ages') or []))}, existing debt {money(p.get('existing_monthly_debt') or 0)}"
-                   f"/month, remaining lease {p.get('flat_remaining_lease') or 0:g} years.")
     if grants and frame.empty and loan.get("status") != "illustrative":
         a, b, c = st.columns(3)
         a.metric("Grants that may apply", sum(g["status"] == "may_apply" for g in grants))
@@ -1305,8 +1474,7 @@ def result_metrics(values):
 
 
 if gate is None and values and values.get("cancelled"):
-    st.divider()
-    st.markdown("<div class='panel' style='border-color:#BE185D'><h4>Search cancelled</h4>"
+    st.markdown("<div class='panel'><h4>Search cancelled</h4>"
                 "No tools ran and no report was produced.</div>", unsafe_allow_html=True)
     a, b, _ = st.columns([1, 1, 2])
     if a.button("Edit search", type="primary", use_container_width=True):
@@ -1317,36 +1485,53 @@ if gate is None and values and values.get("cancelled"):
         fresh_start()
         st.rerun()
 elif gate is None and values and values.get("canonical_report"):
-    st.divider()
     if st.session_state.get("notice"):
         st.success(st.session_state.pop("notice"))
-    finance = finance_headline(values)
-    lead = headline(values)
-    extra = f"<div style='margin-top:.4rem'>{escape(finance)}</div>" if finance and finance not in lead else ""
-    st.markdown(f"<div class='panel' style='border-color:#0F766E'><h4>Answer</h4>"
-                f"<div style='font-size:1.08rem'>{escape(lead)}</div>{extra}"
-                f"<div style='margin-top:.6rem'>{applied_filters(values)}</div></div>", unsafe_allow_html=True)
-    st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
-    result_metrics(values)
-    if values.get("market") and not (values["market"].get("towns") or values["market"].get("error")):
-        zero_result_actions(values, "answer", summary=False)
-    next_step(values)
-    follow_up(values)
+    spec = next_step_spec(values)
+    panel = st.session_state.get("result_panel")
+
+    def toggle(name):
+        st.session_state.result_panel = None if st.session_state.get("result_panel") == name else name
+
+    body, summary = answer_card(values)
+    # One card: the answer, then a footer with the summary on the left and its two actions on the right.
+    with st.container(border=True):
+        st.markdown(body, unsafe_allow_html=True)
+        result_metrics(values)
+        if values.get("market") and not (values["market"].get("towns") or values["market"].get("error")):
+            zero_result_actions(values, "answer", summary=False)
+        st.markdown("<div class='foot-line'></div>", unsafe_allow_html=True)
+        summary_column, first, second = st.columns([2.2, 1.45, 1.05], vertical_alignment="center")
+        summary_column.markdown(summary, unsafe_allow_html=True)
+        if spec:
+            first.button(spec[0], key="open-next", on_click=toggle, args=("next",), use_container_width=True,
+                         type="primary" if panel == "next" else "secondary")
+        current_search = applied_filters(values, plain=True)
+        (second if spec else first).button("Change this search", key="open-refine", on_click=toggle, args=("refine",),
+                                           use_container_width=True,
+                                           type="primary" if panel == "refine" else "secondary",
+                                           help=f"Current search: {current_search}" if current_search else None)
+    if panel == "next" and spec:
+        next_step(values, spec)
+    elif panel == "refine":
+        follow_up(values)
     if any(event.startswith("pii_") for event in values.get("guard_events", [])):
         st.info("Personal identifiers in the brief were redacted before any model or log saw them.")
     if values.get("saved_path"):
         st.success(f"Approved shortlist saved to `{Path(values['saved_path']).name}`.")
-    report, market, grants, trace = st.tabs(["Report", "Market", "Grants and loan", "Agent trace"])
-    with report:
-        st.markdown(values["canonical_report"])
+    def report_tab(values):
         st.download_button("Download report (Markdown)", values["canonical_report"],
                            file_name="hdb-research-brief.md", mime="text/markdown")
-    with market:
-        market_tab(values)
-    with grants:
-        grants_tab(values)
-    with trace:
-        trace_tab(values)
+        with st.container(height=640, border=True):
+            st.markdown(values["canonical_report"])
+
+    # Charts first when a market search ran; otherwise the grant and loan results lead.
+    order = (["Market", "Grants and loan", "Report", "Agent trace"] if values.get("market")
+             else ["Grants and loan", "Report", "Market", "Agent trace"])
+    render = {"Market": market_tab, "Grants and loan": grants_tab, "Report": report_tab, "Agent trace": trace_tab}
+    for name, tab in zip(order, st.tabs(order)):
+        with tab:
+            render[name](values)
     history = values.get("history") or []
     if len(history) > 1:
         with st.expander(f"Earlier in this conversation ({len(history) - 1})", expanded=False):
@@ -1354,4 +1539,3 @@ elif gate is None and values and values.get("canonical_report"):
                 st.markdown(f"**{escape(turn['brief'])}**  <span class='muted'>{turn['at'][:16].replace('T', ' ')}</span>",
                             unsafe_allow_html=True)
                 st.caption(turn["answer"])
-    handling_panel(values, None, title="How the assistant handled this request")
